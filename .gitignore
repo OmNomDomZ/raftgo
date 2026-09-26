@@ -1,0 +1,33 @@
+# Binaries
+/bin/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binaries and coverage
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Go build/vendor cache
+/vendor/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# Local env / secrets
+.env
+.env.local
+
+# Logs and local data dirs (raft/kv node state during manual runs)
+*.log
+/data/
