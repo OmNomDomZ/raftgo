@@ -54,12 +54,17 @@ func markRunning(rf *Raft) {
 	rf.done = make(chan struct{})
 }
 
+// setRoleAndTerm puts rf in role and term directly. A Leader starts with a
+// fresh view of its peers, but without the no-op an election would append.
 func setRoleAndTerm(rf *Raft, role Role, term Term, votedFor NodeID) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	rf.role = role
 	rf.currentTerm = term
 	rf.votedFor = votedFor
+	if role == Leader {
+		rf.initLeaderStateLocked()
+	}
 }
 
 func roleAndTerm(rf *Raft) (Role, Term) {

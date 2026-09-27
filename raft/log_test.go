@@ -1,6 +1,8 @@
 package raft
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"slices"
 	"testing"
@@ -48,6 +50,10 @@ func termsOf(entries []LogEntry) []Term {
 		terms = append(terms, e.Term)
 	}
 	return terms
+}
+
+func entriesEqual(a, b LogEntry) bool {
+	return a.Term == b.Term && a.Kind == b.Kind && bytes.Equal(a.Command, b.Command)
 }
 
 func commitIndex(rf *Raft) Index {
@@ -292,6 +298,218 @@ func TestHandleAppendEntries_RejectsInvalidLog(t *testing.T) {
 		if reply, err := rf.HandleAppendEntries(args); !errors.Is(err, ErrInvalidArgs) || reply != nil {
 			t.Fatalf("HandleAppendEntries(%+v) = %+v, %v; want ErrInvalidArgs", args, reply, err)
 		}
+	}
+}
+
+// --- Leader: Start, commitment and log repair ---
+
+func TestStart_OnlyOnLeader(t *testing.T) {
+	rf, _ := newTestNode(t, "A", "B", "C")
+	setRoleAndTerm(rf, Follower, 2, "")
+	if _, _, err := rf.Start([]byte("x")); !errors.Is(err, ErrNotLeader) {
+		t.Fatalf("expected ErrNotLeader from a follower, got %v", err)
+	}
+}
+
+func TestStart_PersistsBeforeReturning(t *testing.T) {
+	rf, st := newTestNode(t, "A", "B", "C")
+	setRoleAndTerm(rf, Leader, 2, "A")
+	setLog(t, rf, entriesOfTerms(1)...)
+
+	index, term, err := rf.Start([]byte("x"))
+	if err != nil || index != 2 || term != 2 {
+		t.Fatalf("Start = %d, %d, %v; want 2, 2, nil", index, term, err)
+	}
+	if got := st.storedLog(); len(got) != 2 || !entriesEqual(got[1], cmdEntry(2, "x")) {
+		t.Fatalf("entry not stored: %+v", got)
+	}
+
+	st.setFailSave(true)
+	if _, _, err := rf.Start([]byte("y")); err == nil {
+		t.Fatalf("expected Start to fail while storage fails")
+	}
+	if got := logTerms(rf); !slices.Equal(got, []Term{1, 2}) {
+		t.Fatalf("failed Start changed the log to %v", got)
+	}
+}
+
+func TestBecomeLeader_AppendsNoOp(t *testing.T) {
+	rf, st := newTestNode(t, "A", "B", "C")
+	setLog(t, rf, entriesOfTerms(1)...)
+	setRoleAndTerm(rf, Candidate, 2, "A")
+
+	rf.mu.Lock()
+	rf.becomeLeaderLocked()
+	rf.mu.Unlock()
+
+	if _, isLeader := rf.GetState(); !isLeader {
+		t.Fatalf("expected leader")
+	}
+	if got := st.storedLog(); len(got) != 2 || got[1].Kind != EntryNoOp || got[1].Term != 2 {
+		t.Fatalf("expected a stored no-op of term 2 at index 2, got %+v", got)
+	}
+}
+
+func TestBecomeLeader_NoOpPersistFailureStaysCandidate(t *testing.T) {
+	// A leader whose own log is not durable could count entries towards a
+	// commit that a restart would lose.
+	rf, st := newTestNode(t, "A", "B", "C")
+	setRoleAndTerm(rf, Candidate, 2, "A")
+	st.setFailSave(true)
+
+	rf.mu.Lock()
+	rf.becomeLeaderLocked()
+	rf.mu.Unlock()
+
+	if role, _ := roleAndTerm(rf); role != Candidate {
+		t.Fatalf("expected to stay Candidate, got %v", role)
+	}
+	if got := logTerms(rf); len(got) != 0 {
+		t.Fatalf("no-op kept in memory despite failed write: %v", got)
+	}
+}
+
+func TestAdvanceCommit_OnlyCountsReplicasOfCurrentTerm(t *testing.T) {
+	// Figure 8: an entry of an earlier term stored on a majority can still
+	// be overwritten by a leader that lacks it, so it is only committed
+	// together with an entry of the current term (§5.4.2).
+	rf, _ := newTestNode(t, "A", "B", "C", "D", "E")
+	setRoleAndTerm(rf, Leader, 4, "A")
+	setLog(t, rf, cmdEntry(1, "a"), cmdEntry(2, "b"), cmdEntry(4, "c"))
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	rf.matchIndex["B"], rf.matchIndex["C"] = 2, 2
+	rf.advanceCommitLocked()
+	if rf.commitIndex != 0 {
+		t.Fatalf("entry of term 2 committed by counting replicas: commit index %d", rf.commitIndex)
+	}
+
+	rf.matchIndex["B"] = 3
+	rf.advanceCommitLocked()
+	if rf.commitIndex != 0 {
+		t.Fatalf("committed with only 2 of 5 replicas: commit index %d", rf.commitIndex)
+	}
+
+	rf.matchIndex["C"] = 3
+	rf.advanceCommitLocked()
+	if rf.commitIndex != 3 {
+		t.Fatalf("expected index 3 committed on a majority, got commit index %d", rf.commitIndex)
+	}
+}
+
+// replyingPeer answers AppendEntries with reply(args).
+type replyingPeer struct {
+	reply func(*AppendEntriesArgs) *AppendEntriesReply
+}
+
+func (replyingPeer) HandleRequestVote(*RequestVoteArgs) (*RequestVoteReply, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (p replyingPeer) HandleAppendEntries(args *AppendEntriesArgs) (*AppendEntriesReply, error) {
+	return p.reply(args), nil
+}
+
+func TestSendAppendEntries_BacksOffOverConflictingTerm(t *testing.T) {
+	// Leader log terms: 1 1 1 4 4 5 5 6 6 6.
+	leaderLog := entriesOfTerms(1, 1, 1, 4, 4, 5, 5, 6, 6, 6)
+	tests := []struct {
+		name  string
+		reply AppendEntriesReply
+		next  Index
+	}{
+		// Follower has none of term 4 past index 3: skip to what we have.
+		{"follower log shorter", AppendEntriesReply{Term: 6, ConflictIndex: 4}, 4},
+		// Follower has term 2, which we lack: skip its whole run.
+		{"term leader lacks", AppendEntriesReply{Term: 6, ConflictTerm: 2, ConflictIndex: 2}, 2},
+		// Follower has term 5, which we have: continue after our last of it.
+		{"term leader has", AppendEntriesReply{Term: 6, ConflictTerm: 5, ConflictIndex: 6}, 8},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rf, _ := newTestNode(t, "A", "B", "C")
+			setRoleAndTerm(rf, Leader, 6, "A")
+			setLog(t, rf, leaderLog...)
+			rf.transport.(*fakeTransport).register("B", replyingPeer{func(*AppendEntriesArgs) *AppendEntriesReply {
+				reply := tt.reply
+				return &reply
+			}})
+
+			rf.mu.Lock()
+			rf.nextIndex["B"] = 10
+			args := rf.appendEntriesArgsLocked("B")
+			rf.mu.Unlock()
+
+			if again := rf.sendAppendEntries(context.Background(), "B", args); !again {
+				t.Fatalf("expected an immediate retry after a mismatch")
+			}
+			rf.mu.Lock()
+			defer rf.mu.Unlock()
+			if got := rf.nextIndex["B"]; got != tt.next {
+				t.Fatalf("nextIndex %d, want %d", got, tt.next)
+			}
+		})
+	}
+}
+
+func TestSendAppendEntries_SuccessAdvancesMatchAndCommit(t *testing.T) {
+	rf, _ := newTestNode(t, "A", "B", "C")
+	setRoleAndTerm(rf, Leader, 2, "A")
+	setLog(t, rf, entriesOfTerms(2, 2, 2)...)
+	rf.transport.(*fakeTransport).register("B", replyingPeer{func(args *AppendEntriesArgs) *AppendEntriesReply {
+		return &AppendEntriesReply{Term: args.Term, Success: true}
+	}})
+
+	rf.mu.Lock()
+	rf.nextIndex["B"] = 1
+	rf.maxEntriesPerRPC = 2
+	args := rf.appendEntriesArgsLocked("B")
+	rf.mu.Unlock()
+	if len(args.Entries) != 2 {
+		t.Fatalf("expected MaxEntriesPerRPC to cap the batch at 2, got %d", len(args.Entries))
+	}
+
+	if again := rf.sendAppendEntries(context.Background(), "B", args); !again {
+		t.Fatalf("expected an immediate follow-up while B is behind")
+	}
+	rf.mu.Lock()
+	match, next, commit := rf.matchIndex["B"], rf.nextIndex["B"], rf.commitIndex
+	rf.mu.Unlock()
+	if match != 2 || next != 3 || commit != 2 {
+		t.Fatalf("matchIndex %d nextIndex %d commitIndex %d, want 2 3 2", match, next, commit)
+	}
+}
+
+func TestSendAppendEntries_ReplyForEarlierTermIsIgnored(t *testing.T) {
+	rf, _ := newTestNode(t, "A", "B", "C")
+	setRoleAndTerm(rf, Leader, 3, "A")
+	setLog(t, rf, entriesOfTerms(2, 3)...)
+	rf.transport.(*fakeTransport).register("B", grantingPeer{})
+
+	rf.sendAppendEntries(context.Background(), "B", &AppendEntriesArgs{
+		Term: 2, LeaderID: "A", PrevLogIndex: 0, Entries: entriesOfTerms(2, 3)[:1],
+	})
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if rf.matchIndex["B"] != 0 {
+		t.Fatalf("success for a term-2 request counted in term 3: matchIndex %d", rf.matchIndex["B"])
+	}
+}
+
+func TestAppendEntriesReply_InvalidConflictIsAFailedRPC(t *testing.T) {
+	args := &AppendEntriesArgs{Term: 2, LeaderID: "A", PrevLogIndex: 3, PrevLogTerm: 1}
+	for _, reply := range []*AppendEntriesReply{
+		{Term: 2, ConflictIndex: 0}, // index 0 always matches
+		{Term: 2, ConflictIndex: 4}, // past PrevLogIndex: no backing off
+	} {
+		if err := checkAppendEntriesReply(args, reply); !errors.Is(err, errInvalidReply) {
+			t.Fatalf("checkAppendEntriesReply(%+v) = %v, want errInvalidReply", reply, err)
+		}
+	}
+	// A rejection from a later term carries no conflict information.
+	if err := checkAppendEntriesReply(args, &AppendEntriesReply{Term: 3}); err != nil {
+		t.Fatalf("rejection from a later term: %v", err)
 	}
 }
 

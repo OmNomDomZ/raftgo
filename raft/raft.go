@@ -41,6 +41,7 @@ const (
 	defaultRPCTimeout        = 200 * time.Millisecond
 	defaultElectionMin       = 150 * time.Millisecond
 	defaultElectionMax       = 300 * time.Millisecond
+	defaultMaxEntriesPerRPC  = 64
 )
 
 // Config configures a node. ID, Peers, Transport and Storage are required;
@@ -68,6 +69,10 @@ type Config struct {
 	HeartbeatInterval time.Duration
 	// RPCTimeout bounds each RequestVote RPC. Default: 200ms.
 	RPCTimeout time.Duration
+	// MaxEntriesPerRPC bounds the entries in one AppendEntries, so catching
+	// up a lagging follower does not produce an RPC that cannot finish
+	// within HeartbeatInterval. Default: 64.
+	MaxEntriesPerRPC int
 
 	Logger *slog.Logger // default discards everything
 
@@ -108,6 +113,9 @@ func (c *Config) validateAndSetDefaults() error {
 	}
 	if c.Storage == nil {
 		errs = append(errs, errors.New("storage is required"))
+	}
+	if c.MaxEntriesPerRPC < 0 {
+		errs = append(errs, fmt.Errorf("negative max entries per RPC %d", c.MaxEntriesPerRPC))
 	}
 	if c.HeartbeatInterval < 0 {
 		errs = append(errs, fmt.Errorf("negative heartbeat interval %v", c.HeartbeatInterval))
@@ -152,6 +160,9 @@ func (c *Config) validateAndSetDefaults() error {
 	if c.RPCTimeout == 0 {
 		c.RPCTimeout = defaultRPCTimeout
 	}
+	if c.MaxEntriesPerRPC == 0 {
+		c.MaxEntriesPerRPC = defaultMaxEntriesPerRPC
+	}
 	if c.OnFatal == nil {
 		c.OnFatal = func(msg string) {
 			fmt.Fprintln(os.Stderr, msg)
@@ -192,13 +203,14 @@ type Raft struct {
 	electionTimeout   func() time.Duration
 	heartbeatInterval time.Duration
 	rpcTimeout        time.Duration
+	maxEntriesPerRPC  int
 	logger            *slog.Logger
 	onFatal           func(msg string)
 	electionTimer     Timer // stopped while Leader
 	heartbeatTimer    Timer // running only while Leader
 	// onBecomeLeader, if set, is called under mu whenever the node becomes
-	// Leader. Tests use it to check Election Safety over a node's whole
-	// history rather than at sampled moments.
+	// Leader. Tests use it to check Election Safety and Leader Completeness
+	// over a node's whole history rather than at sampled moments.
 	onBecomeLeader func(term Term)
 
 	// wg tracks the goroutines Run waits for on exit. wg.Go must only be
@@ -236,6 +248,10 @@ type Raft struct {
 	// volatile: a restarted node learns it again from the leader, or as
 	// leader by committing an entry of its own term.
 	commitIndex Index
+	// nextIndex and matchIndex are the leader's view of each peer's log
+	// (Figure 2), reset on every election win; see initLeaderStateLocked.
+	nextIndex  map[NodeID]Index
+	matchIndex map[NodeID]Index
 }
 
 // New creates a node, restoring its term and vote from cfg.Storage if a
@@ -268,6 +284,7 @@ func New(cfg Config) (*Raft, error) {
 		electionTimeout:   cfg.electionTimeout,
 		heartbeatInterval: cfg.HeartbeatInterval,
 		rpcTimeout:        cfg.RPCTimeout,
+		maxEntriesPerRPC:  cfg.MaxEntriesPerRPC,
 		logger:            cfg.Logger.With("node", cfg.ID),
 		onFatal:           cfg.OnFatal,
 		electionTimer:     cfg.Clock.NewTimer(0),
@@ -326,17 +343,42 @@ func (rf *Raft) quorum() int {
 	return (len(rf.peers)+1)/2 + 1
 }
 
+// becomeLeaderLocked is called once a Candidate has a quorum of votes.
 func (rf *Raft) becomeLeaderLocked() {
-	rf.logger.Info("became leader", "term", rf.currentTerm, "votes", len(rf.votes))
+	// The no-op must be durable before the node acts as leader, since
+	// counting its own log towards commitment assumes that. If it cannot be
+	// stored, the node stays Candidate: the next grant or election retries,
+	// and until then there is no leader in this term, which is always safe.
+	noop := LogEntry{Term: rf.currentTerm, Kind: EntryNoOp}
+	if err := rf.storeLogLocked(rf.lastLogIndexLocked()+1, []LogEntry{noop}); err != nil {
+		return
+	}
+	rf.logger.Info("became leader", "term", rf.currentTerm, "votes", len(rf.votes),
+		"lastLogIndex", rf.lastLogIndexLocked())
 	rf.role = Leader
+	rf.initLeaderStateLocked()
 	if rf.onBecomeLeader != nil {
 		rf.onBecomeLeader(rf.currentTerm)
 	}
 	// Outstanding vote requests are no longer needed.
 	rf.cancelRPCsLocked()
 	rf.electionTimer.Stop()
+	// A single-node cluster commits the no-op right away.
+	rf.advanceCommitLocked()
 	// Fire immediately to assert leadership without waiting a full interval.
 	rf.heartbeatTimer.Reset(0)
+}
+
+// initLeaderStateLocked resets the leader's view of its peers (Figure 2):
+// it knows nothing about their logs yet, so it optimistically starts
+// replicating right after its own last entry.
+func (rf *Raft) initLeaderStateLocked() {
+	rf.nextIndex = make(map[NodeID]Index, len(rf.peers))
+	rf.matchIndex = make(map[NodeID]Index, len(rf.peers))
+	for _, p := range rf.peers {
+		rf.nextIndex[p.id] = rf.lastLogIndexLocked() + 1
+		rf.matchIndex[p.id] = 0
+	}
 }
 
 // adoptHigherTermLocked moves to a newer term and steps down (§5.1). It does

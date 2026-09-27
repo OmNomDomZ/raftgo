@@ -1,6 +1,9 @@
 package raft
 
-import "fmt"
+import (
+	"fmt"
+	"slices"
+)
 
 // EntryKind tells what a log entry carries.
 type EntryKind uint8
@@ -40,6 +43,16 @@ func (rf *Raft) termAtLocked(i Index) Term {
 	return rf.log[i].Term
 }
 
+// entriesLocked returns a copy of the entries in [lo, hi). It is a copy
+// because the log's backing array is overwritten when a suffix is replaced,
+// while the result may still be in flight in an RPC.
+func (rf *Raft) entriesLocked(lo, hi Index) []LogEntry {
+	if lo >= hi {
+		return nil
+	}
+	return slices.Clone(rf.log[lo:hi])
+}
+
 // firstIndexOfTermLocked returns the first index of the run of entries that
 // has the same term as the entry at i (i >= 1).
 func (rf *Raft) firstIndexOfTermLocked(i Index) Index {
@@ -48,6 +61,20 @@ func (rf *Raft) firstIndexOfTermLocked(i Index) Index {
 		i--
 	}
 	return i
+}
+
+// lastIndexOfTermLocked returns the last index of an entry of the given
+// term, if the log has one. Terms never decrease along the log.
+func (rf *Raft) lastIndexOfTermLocked(term Term) (Index, bool) {
+	for i := rf.lastLogIndexLocked(); i > 0; i-- {
+		switch t := rf.termAtLocked(i); {
+		case t == term:
+			return i, true
+		case t < term:
+			return 0, false
+		}
+	}
+	return 0, false
 }
 
 // storeLogLocked makes entries durable in place of the log from index from
