@@ -232,6 +232,10 @@ type Raft struct {
 	// log is always durable: storeLogLocked writes it before adopting it.
 	// See log.go for its layout.
 	log []LogEntry
+	// commitIndex is the highest index known to be committed. It is
+	// volatile: a restarted node learns it again from the leader, or as
+	// leader by committing an entry of its own term.
+	commitIndex Index
 }
 
 // New creates a node, restoring its term and vote from cfg.Storage if a

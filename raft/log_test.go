@@ -42,6 +42,20 @@ func logTerms(rf *Raft) []Term {
 	return terms
 }
 
+func termsOf(entries []LogEntry) []Term {
+	var terms []Term
+	for _, e := range entries {
+		terms = append(terms, e.Term)
+	}
+	return terms
+}
+
+func commitIndex(rf *Raft) Index {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	return rf.commitIndex
+}
+
 // --- RequestVote: election restriction (§5.4.1) ---
 
 func TestHandleRequestVote_RequiresUpToDateLog(t *testing.T) {
@@ -109,6 +123,178 @@ func TestHandleRequestVote_RejectsInvalidLastLogEntry(t *testing.T) {
 	}
 }
 
+// --- AppendEntries receiver (Figure 2, §5.3) ---
+
+func TestHandleAppendEntries_PrevEntryMissing(t *testing.T) {
+	rf, _ := newTestNode(t, "A", "B", "C")
+	setLog(t, rf, entriesOfTerms(1, 1)...)
+
+	reply := mustHandleAppendEntries(t, rf, &AppendEntriesArgs{
+		Term: 2, LeaderID: "B", PrevLogIndex: 5, PrevLogTerm: 2, Entries: entriesOfTerms(2),
+	})
+	if reply.Success || reply.ConflictTerm != 0 || reply.ConflictIndex != 3 {
+		t.Fatalf("expected rejection with ConflictIndex 3 and no ConflictTerm, got %+v", reply)
+	}
+	if got := logTerms(rf); !slices.Equal(got, []Term{1, 1}) {
+		t.Fatalf("rejected request changed the log: %v", got)
+	}
+}
+
+func TestHandleAppendEntries_PrevEntryTermMismatch(t *testing.T) {
+	rf, _ := newTestNode(t, "A", "B", "C")
+	setLog(t, rf, entriesOfTerms(1, 2, 2, 2)...)
+
+	reply := mustHandleAppendEntries(t, rf, &AppendEntriesArgs{
+		Term: 3, LeaderID: "B", PrevLogIndex: 4, PrevLogTerm: 3,
+	})
+	if reply.Success || reply.ConflictTerm != 2 || reply.ConflictIndex != 2 {
+		t.Fatalf("expected rejection with ConflictTerm 2 from index 2, got %+v", reply)
+	}
+	if got := logTerms(rf); !slices.Equal(got, []Term{1, 2, 2, 2}) {
+		t.Fatalf("rejected request changed the log: %v", got)
+	}
+}
+
+func TestHandleAppendEntries_AppendsAndPersistsBeforeReplying(t *testing.T) {
+	rf, st := newTestNode(t, "A", "B", "C")
+	setLog(t, rf, entriesOfTerms(1)...)
+
+	reply := mustHandleAppendEntries(t, rf, &AppendEntriesArgs{
+		Term: 2, LeaderID: "B", PrevLogIndex: 1, PrevLogTerm: 1, Entries: entriesOfTerms(1, 2),
+	})
+	if !reply.Success {
+		t.Fatalf("expected success, got %+v", reply)
+	}
+	want := []Term{1, 1, 2}
+	if got := logTerms(rf); !slices.Equal(got, want) {
+		t.Fatalf("log %v, want %v", got, want)
+	}
+	if got := termsOf(st.storedLog()); !slices.Equal(got, want) {
+		t.Fatalf("stored log %v, want %v", got, want)
+	}
+}
+
+func TestHandleAppendEntries_TruncatesConflictingSuffix(t *testing.T) {
+	rf, st := newTestNode(t, "A", "B", "C")
+	setLog(t, rf, entriesOfTerms(1, 2, 2, 2)...)
+
+	reply := mustHandleAppendEntries(t, rf, &AppendEntriesArgs{
+		Term: 3, LeaderID: "B", PrevLogIndex: 1, PrevLogTerm: 1, Entries: entriesOfTerms(2, 3),
+	})
+	if !reply.Success {
+		t.Fatalf("expected success, got %+v", reply)
+	}
+	want := []Term{1, 2, 3}
+	if got := logTerms(rf); !slices.Equal(got, want) {
+		t.Fatalf("log %v, want %v", got, want)
+	}
+	if got := termsOf(st.storedLog()); !slices.Equal(got, want) {
+		t.Fatalf("stored log %v, want %v", got, want)
+	}
+}
+
+func TestHandleAppendEntries_StaleRequestDoesNotTruncate(t *testing.T) {
+	// A delayed AppendEntries carries a prefix of what the follower already
+	// has. Truncating after it would drop entries the leader may have
+	// counted towards a commit.
+	rf, st := newTestNode(t, "A", "B", "C")
+	setRoleAndTerm(rf, Follower, 2, "")
+	setLog(t, rf, entriesOfTerms(1, 2, 2, 2)...)
+	writes := st.logWriteCount()
+
+	reply := mustHandleAppendEntries(t, rf, &AppendEntriesArgs{
+		Term: 2, LeaderID: "B", PrevLogIndex: 1, PrevLogTerm: 1, Entries: entriesOfTerms(2),
+	})
+	if !reply.Success {
+		t.Fatalf("expected success, got %+v", reply)
+	}
+	if got := logTerms(rf); !slices.Equal(got, []Term{1, 2, 2, 2}) {
+		t.Fatalf("stale request truncated the log to %v", got)
+	}
+	if st.logWriteCount() != writes {
+		t.Fatalf("request with nothing new wrote the log")
+	}
+}
+
+func TestHandleAppendEntries_CommitIndexCoversOnlyVerifiedEntries(t *testing.T) {
+	// Entries past the request are not known to match the leader's log, so
+	// the leader's commit index must not reach them (Figure 2).
+	rf, _ := newTestNode(t, "A", "B", "C")
+	setRoleAndTerm(rf, Follower, 2, "")
+	setLog(t, rf, entriesOfTerms(1, 1, 1, 1)...)
+
+	mustHandleAppendEntries(t, rf, &AppendEntriesArgs{
+		Term: 2, LeaderID: "B", PrevLogIndex: 1, PrevLogTerm: 1, Entries: entriesOfTerms(1), LeaderCommit: 10,
+	})
+	if got := commitIndex(rf); got != 2 {
+		t.Fatalf("commit index %d, want 2", got)
+	}
+
+	// An older request never moves the commit index back.
+	mustHandleAppendEntries(t, rf, &AppendEntriesArgs{Term: 2, LeaderID: "B", LeaderCommit: 1})
+	if got := commitIndex(rf); got != 2 {
+		t.Fatalf("commit index moved back to %d", got)
+	}
+}
+
+func TestHandleAppendEntries_StorageFailureGivesNoReply(t *testing.T) {
+	// Success would tell the leader the entries are durable.
+	rf, st := newTestNode(t, "A", "B", "C")
+	setRoleAndTerm(rf, Follower, 2, "")
+	setLog(t, rf, entriesOfTerms(1, 1)...)
+	st.setFailSave(true)
+
+	args := &AppendEntriesArgs{
+		Term: 2, LeaderID: "B", PrevLogIndex: 1, PrevLogTerm: 1, Entries: entriesOfTerms(2), LeaderCommit: 2,
+	}
+	if reply, err := rf.HandleAppendEntries(args); err == nil {
+		t.Fatalf("expected no reply while storage fails, got %+v", reply)
+	}
+	if got := logTerms(rf); !slices.Equal(got, []Term{1, 1}) {
+		t.Fatalf("failed write changed the in-memory log to %v", got)
+	}
+	if got := commitIndex(rf); got != 0 {
+		t.Fatalf("failed write advanced the commit index to %d", got)
+	}
+}
+
+func TestHandleAppendEntries_RefusesToOverwriteCommittedEntry(t *testing.T) {
+	rf, _ := newTestNode(t, "A", "B", "C")
+	setRoleAndTerm(rf, Follower, 3, "")
+	setLog(t, rf, entriesOfTerms(1, 2)...)
+	rf.mu.Lock()
+	rf.commitIndex = 2
+	rf.mu.Unlock()
+
+	_, err := rf.HandleAppendEntries(&AppendEntriesArgs{
+		Term: 3, LeaderID: "B", PrevLogIndex: 1, PrevLogTerm: 1, Entries: entriesOfTerms(3),
+	})
+	if !errors.Is(err, ErrCommittedConflict) {
+		t.Fatalf("expected ErrCommittedConflict, got %v", err)
+	}
+	if got := logTerms(rf); !slices.Equal(got, []Term{1, 2}) {
+		t.Fatalf("committed entry overwritten: %v", got)
+	}
+}
+
+func TestHandleAppendEntries_RejectsInvalidLog(t *testing.T) {
+	rf, _ := newTestNode(t, "A", "B")
+	for _, args := range []*AppendEntriesArgs{
+		{Term: 2, LeaderID: "B", PrevLogIndex: 1, PrevLogTerm: 3},                             // prev term above own term
+		{Term: 2, LeaderID: "B", PrevLogIndex: 1, PrevLogTerm: 0},                             // real entry of term 0
+		{Term: 2, LeaderID: "B", PrevLogIndex: 0, PrevLogTerm: 1},                             // sentinel with a term
+		{Term: 2, LeaderID: "B", Entries: entriesOfTerms(3)},                                  // entry above own term
+		{Term: 2, LeaderID: "B", Entries: entriesOfTerms(2, 1)},                               // decreasing terms
+		{Term: 2, LeaderID: "B", PrevLogIndex: 1, PrevLogTerm: 2, Entries: entriesOfTerms(1)}, // below prev term
+		{Term: 2, LeaderID: "B", Entries: entriesOfTerms(0)},                                  // entry of term 0
+		{Term: 2, LeaderID: "B", Entries: []LogEntry{{Term: 1, Kind: 7}}},                     // unknown kind
+	} {
+		if reply, err := rf.HandleAppendEntries(args); !errors.Is(err, ErrInvalidArgs) || reply != nil {
+			t.Fatalf("HandleAppendEntries(%+v) = %+v, %v; want ErrInvalidArgs", args, reply, err)
+		}
+	}
+}
+
 // --- Restart ---
 
 func TestNew_RestoresLog(t *testing.T) {
@@ -122,6 +308,9 @@ func TestNew_RestoresLog(t *testing.T) {
 	restarted := restartTestNode(t, st, "A", "B", "C")
 	if got := logTerms(restarted); !slices.Equal(got, []Term{1, 2}) {
 		t.Fatalf("restored log %v, want [1 2]", got)
+	}
+	if got := commitIndex(restarted); got != 0 {
+		t.Fatalf("commit index is volatile, got %d after restart", got)
 	}
 }
 

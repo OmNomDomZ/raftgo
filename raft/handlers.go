@@ -3,6 +3,7 @@ package raft
 import (
 	"errors"
 	"fmt"
+	"math"
 )
 
 var _ RPCHandler = (*Raft)(nil)
@@ -25,6 +26,12 @@ var ErrInvalidArgs = errors.New("raft: invalid RPC arguments")
 // leader of the request's term. Election Safety is already broken then, and
 // any reply would be misread: Success=false means a log mismatch (§5.3).
 var ErrLeaderConflict = errors.New("raft: another leader in this term")
+
+// ErrCommittedConflict is returned by HandleAppendEntries when the request
+// would overwrite a committed entry. State Machine Safety is already broken
+// then (§5.4.3); the entry may have been applied, so the node keeps its log
+// and answers nothing.
+var ErrCommittedConflict = errors.New("raft: request conflicts with a committed entry")
 
 // HandleRequestVote implements the RequestVote RPC receiver (Figure 2).
 func (rf *Raft) HandleRequestVote(args *RequestVoteArgs) (*RequestVoteReply, error) {
@@ -114,7 +121,55 @@ func (rf *Raft) HandleAppendEntries(args *AppendEntriesArgs) (*AppendEntriesRepl
 		return nil, fmt.Errorf("raft: persist term %d: %w", rf.currentTerm, err)
 	}
 
-	// TODO(3B): log consistency check and entry append (§5.3).
+	return rf.appendEntriesLocked(args)
+}
+
+// appendEntriesLocked is the log part of the AppendEntries receiver
+// (Figure 2, §5.3), for a request from the leader of our current term.
+func (rf *Raft) appendEntriesLocked(args *AppendEntriesArgs) (*AppendEntriesReply, error) {
+	last := rf.lastLogIndexLocked()
+	if args.PrevLogIndex > last {
+		return &AppendEntriesReply{Term: rf.currentTerm, ConflictIndex: last + 1}, nil
+	}
+	if term := rf.termAtLocked(args.PrevLogIndex); term != args.PrevLogTerm {
+		return &AppendEntriesReply{
+			Term:          rf.currentTerm,
+			ConflictTerm:  term,
+			ConflictIndex: rf.firstIndexOfTermLocked(args.PrevLogIndex),
+		}, nil
+	}
+
+	// Only truncate at the first entry that actually conflicts. A delayed or
+	// duplicated request carries a prefix of what we already have, and
+	// truncating after it would drop entries we may have acknowledged.
+	skip := 0
+	for skip < len(args.Entries) {
+		i := args.PrevLogIndex + 1 + Index(skip)
+		if i > last || rf.termAtLocked(i) != args.Entries[skip].Term {
+			break
+		}
+		skip++
+	}
+	if skip < len(args.Entries) {
+		from := args.PrevLogIndex + 1 + Index(skip)
+		if from <= rf.commitIndex {
+			rf.logger.Error("leader overwrites a committed entry, not answering (State Machine Safety, §5.4.3)",
+				"term", args.Term, "leader", args.LeaderID, "index", from, "commitIndex", rf.commitIndex)
+			return nil, fmt.Errorf("%w: index %d from %s in term %d, commit index %d",
+				ErrCommittedConflict, from, args.LeaderID, args.Term, rf.commitIndex)
+		}
+		// Success tells the leader the entries are stored, so they must be
+		// durable before the reply (§5.3).
+		if err := rf.storeLogLocked(from, args.Entries[skip:]); err != nil {
+			return nil, fmt.Errorf("raft: persist entries from %d in term %d: %w", from, rf.currentTerm, err)
+		}
+	}
+
+	// Entries past the request may not match the leader's log yet, so the
+	// leader's commit index only covers the last entry it sent (Figure 2).
+	if commit := min(args.LeaderCommit, args.PrevLogIndex+Index(len(args.Entries))); commit > rf.commitIndex {
+		rf.commitIndex = commit
+	}
 	return &AppendEntriesReply{Term: rf.currentTerm, Success: true}, nil
 }
 
@@ -166,7 +221,8 @@ func (rf *Raft) checkRequestVoteArgs(args *RequestVoteArgs) error {
 }
 
 // checkAppendEntriesArgs rejects requests no correct leader sends; see
-// checkRequestVoteArgs. A leader was elected in its term, so it is never 0.
+// checkRequestVoteArgs. A leader was elected in its term, so it is never 0,
+// and its log is a valid log whose terms are at most its own.
 func (rf *Raft) checkAppendEntriesArgs(args *AppendEntriesArgs) error {
 	switch {
 	case args == nil:
@@ -177,6 +233,14 @@ func (rf *Raft) checkAppendEntriesArgs(args *AppendEntriesArgs) error {
 		return fmt.Errorf("%w: AppendEntries from this node itself", ErrInvalidArgs)
 	case args.Term == 0:
 		return fmt.Errorf("%w: AppendEntries from %s in term 0", ErrInvalidArgs, args.LeaderID)
+	case args.PrevLogTerm > args.Term || (args.PrevLogIndex == 0) != (args.PrevLogTerm == 0):
+		return fmt.Errorf("%w: AppendEntries from %s in term %d with prev log entry %d of term %d",
+			ErrInvalidArgs, args.LeaderID, args.Term, args.PrevLogIndex, args.PrevLogTerm)
+	case uint64(len(args.Entries)) > math.MaxUint64-uint64(args.PrevLogIndex):
+		return fmt.Errorf("%w: AppendEntries from %s overflows the log index", ErrInvalidArgs, args.LeaderID)
+	}
+	if err := checkEntries(args.PrevLogTerm, args.Entries, args.Term); err != nil {
+		return fmt.Errorf("%w: AppendEntries from %s: %w", ErrInvalidArgs, args.LeaderID, err)
 	}
 	return nil
 }

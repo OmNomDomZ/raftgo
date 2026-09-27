@@ -203,6 +203,19 @@ func (s *fakeStorage) LoadLog() ([]LogEntry, error) {
 	return slices.Clone(s.log), nil
 }
 
+// storedLog returns a copy of the stored log.
+func (s *fakeStorage) storedLog() []LogEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.log)
+}
+
+func (s *fakeStorage) logWriteCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.logWrites
+}
+
 // fakeTransport calls the target node's handlers synchronously in the
 // caller's goroutine. A partitioned node can neither send nor receive. If a
 // drop function is set, each request and each reply is lost when it returns

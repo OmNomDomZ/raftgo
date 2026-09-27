@@ -34,6 +34,22 @@ func (rf *Raft) lastLogTermLocked() Term {
 	return rf.log[len(rf.log)-1].Term
 }
 
+// termAtLocked returns the term of the entry at i, which must be at most
+// lastLogIndexLocked.
+func (rf *Raft) termAtLocked(i Index) Term {
+	return rf.log[i].Term
+}
+
+// firstIndexOfTermLocked returns the first index of the run of entries that
+// has the same term as the entry at i (i >= 1).
+func (rf *Raft) firstIndexOfTermLocked(i Index) Index {
+	term := rf.termAtLocked(i)
+	for i > 1 && rf.termAtLocked(i-1) == term {
+		i--
+	}
+	return i
+}
+
 // storeLogLocked makes entries durable in place of the log from index from
 // on, and only then adopts them in memory, so a failed write leaves the log
 // unchanged: a node must not acknowledge entries a restart would lose.

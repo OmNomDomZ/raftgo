@@ -9,7 +9,8 @@ import "context"
 // Args and replies are shared, not copied: the node passes one args value to
 // every peer's goroutine, and an in-memory transport may hand it straight to
 // the target's handler. Neither side may modify an args or reply value, nor
-// anything it references, once it has been passed on.
+// anything it references, once it has been passed on. That includes the
+// entries of an AppendEntries and their commands.
 type Transport interface {
 	RequestVote(ctx context.Context, target NodeID, args *RequestVoteArgs) (*RequestVoteReply, error)
 	AppendEntries(ctx context.Context, target NodeID, args *AppendEntriesArgs) (*AppendEntriesReply, error)
@@ -41,12 +42,25 @@ type RequestVoteReply struct {
 
 // AppendEntriesArgs is the AppendEntries RPC request (Figure 2).
 type AppendEntriesArgs struct {
-	Term     Term
-	LeaderID NodeID
+	Term         Term
+	LeaderID     NodeID
+	PrevLogIndex Index
+	PrevLogTerm  Term
+	Entries      []LogEntry // empty for a heartbeat
+	LeaderCommit Index
 }
 
 // AppendEntriesReply is the AppendEntries RPC response (Figure 2).
+//
+// When the follower rejects the request because its log does not match at
+// PrevLogIndex, ConflictTerm and ConflictIndex let the leader skip back over
+// a whole term per round trip instead of one entry (§5.3): ConflictTerm is
+// the term of the follower's entry at PrevLogIndex and ConflictIndex the
+// first index of that term, or, if the follower's log is shorter than
+// PrevLogIndex, ConflictTerm is 0 and ConflictIndex one past its last entry.
 type AppendEntriesReply struct {
-	Term    Term
-	Success bool
+	Term          Term
+	Success       bool
+	ConflictTerm  Term
+	ConflictIndex Index
 }
