@@ -75,10 +75,10 @@ func (rf *Raft) replicate(ctx context.Context, p peer) {
 				break
 			}
 			rpcCtx := rf.rpcContextLocked(ctx)
-			args := rf.appendEntriesArgsLocked(p.id)
+			args, round := rf.appendEntriesArgsLocked(p.id)
 			rf.mu.Unlock()
 
-			if !rf.sendAppendEntries(rpcCtx, p.id, args) {
+			if !rf.sendAppendEntries(rpcCtx, p.id, args, round) {
 				break
 			}
 		}
@@ -86,8 +86,9 @@ func (rf *Raft) replicate(ctx context.Context, p peer) {
 }
 
 // appendEntriesArgsLocked builds the next AppendEntries for peer from its
-// nextIndex (Figure 2).
-func (rf *Raft) appendEntriesArgsLocked(peer NodeID) *AppendEntriesArgs {
+// nextIndex (Figure 2). It also returns the latest read round, which an answer
+// to this request confirms; see ReadIndex.
+func (rf *Raft) appendEntriesArgsLocked(peer NodeID) (*AppendEntriesArgs, uint64) {
 	next := rf.nextIndex[peer]
 	end := min(rf.lastLogIndexLocked()+1, next+Index(rf.maxEntriesPerRPC))
 	return &AppendEntriesArgs{
@@ -97,13 +98,14 @@ func (rf *Raft) appendEntriesArgsLocked(peer NodeID) *AppendEntriesArgs {
 		PrevLogTerm:  rf.termAtLocked(next - 1),
 		Entries:      rf.entriesLocked(next, end),
 		LeaderCommit: rf.commitIndex,
-	}
+	}, rf.readRound
 }
 
-// sendAppendEntries sends args to peer and handles the reply. It reports
-// whether peer needs another AppendEntries right away: its log is still
-// behind, or it rejected args and nextIndex has backed off.
-func (rf *Raft) sendAppendEntries(ctx context.Context, peer NodeID, args *AppendEntriesArgs) (again bool) {
+// sendAppendEntries sends args to peer and handles the reply; round is the
+// read round args confirms. It reports whether peer needs another
+// AppendEntries right away: its log is still behind, or it rejected args and
+// nextIndex has backed off.
+func (rf *Raft) sendAppendEntries(ctx context.Context, peer NodeID, args *AppendEntriesArgs, round uint64) (again bool) {
 	// Waiting long on a lost AppendEntries would hold back the next and let
 	// the peer's election timer fire; see Config.AppendEntriesTimeout.
 	ctx, cancel := rf.withTimeout(ctx, rf.appendEntriesTimeout)
@@ -133,6 +135,10 @@ func (rf *Raft) sendAppendEntries(ctx context.Context, peer NodeID, args *Append
 	// Any answer in our term, success or not, shows that peer has not moved
 	// on to a later term, so it still backs this leader.
 	rf.heardFrom[peer] = struct{}{}
+	if round > rf.ackedRound[peer] {
+		rf.ackedRound[peer] = round
+		rf.resolveReadsLocked()
+	}
 
 	if reply.Success {
 		// peer's log now matches ours through the last entry sent (§5.3).
@@ -188,6 +194,7 @@ func (rf *Raft) advanceCommitLocked() {
 	}
 	rf.commitIndex = n
 	rf.wakeApplierLocked()
+	rf.resolveReadsLocked()
 }
 
 // checkAppendEntriesReply rejects replies no correct peer sends; see

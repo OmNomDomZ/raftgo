@@ -93,7 +93,7 @@ func TestReply_NilWithoutErrorIsAFailedRPC(t *testing.T) {
 	setRoleAndTerm(rf, Candidate, 2, "A")
 
 	rf.requestVote(context.Background(), "B", &RequestVoteArgs{Term: 2, CandidateID: "A"})
-	rf.sendAppendEntries(context.Background(), "B", &AppendEntriesArgs{Term: 2, LeaderID: "A"})
+	rf.sendAppendEntries(context.Background(), "B", &AppendEntriesArgs{Term: 2, LeaderID: "A"}, 0)
 
 	if role, term := roleAndTerm(rf); role != Candidate || term != 2 {
 		t.Fatalf("nil reply changed state: %v in term %d", role, term)
@@ -116,7 +116,7 @@ func TestReply_WrongTermIsAFailedRPC(t *testing.T) {
 			}
 
 			setRoleAndTerm(rf, Leader, 2, "A")
-			rf.sendAppendEntries(context.Background(), "B", &AppendEntriesArgs{Term: 2, LeaderID: "A"})
+			rf.sendAppendEntries(context.Background(), "B", &AppendEntriesArgs{Term: 2, LeaderID: "A"}, 0)
 			if role, term := roleAndTerm(rf); role != Leader || term != 2 {
 				t.Fatalf("invalid AppendEntries reply changed state: %v in term %d", role, term)
 			}
@@ -138,14 +138,14 @@ func TestReply_InvalidIsLoggedAsError(t *testing.T) {
 
 	// C is not registered, so the request is lost.
 	rf.requestVote(context.Background(), "C", &RequestVoteArgs{Term: 2, CandidateID: "A"})
-	rf.sendAppendEntries(context.Background(), "C", &AppendEntriesArgs{Term: 2, LeaderID: "A"})
+	rf.sendAppendEntries(context.Background(), "C", &AppendEntriesArgs{Term: 2, LeaderID: "A"}, 0)
 	if logs.Len() != 0 {
 		t.Fatalf("lost messages logged above debug level: %s", logs.String())
 	}
 
 	rf.transport.(*fakeTransport).register("B", wrongTermPeer{term: 1})
 	rf.requestVote(context.Background(), "B", &RequestVoteArgs{Term: 2, CandidateID: "A"})
-	rf.sendAppendEntries(context.Background(), "B", &AppendEntriesArgs{Term: 2, LeaderID: "A"})
+	rf.sendAppendEntries(context.Background(), "B", &AppendEntriesArgs{Term: 2, LeaderID: "A"}, 0)
 	for _, rpc := range []string{"RequestVote", "AppendEntries"} {
 		if !strings.Contains(logs.String(), "level=ERROR msg=\""+rpc+" failed\"") {
 			t.Fatalf("invalid %s reply not logged as an error: %s", rpc, logs.String())

@@ -441,10 +441,10 @@ func TestSendAppendEntries_BacksOffOverConflictingTerm(t *testing.T) {
 
 			rf.mu.Lock()
 			rf.nextIndex["B"] = 10
-			args := rf.appendEntriesArgsLocked("B")
+			args, round := rf.appendEntriesArgsLocked("B")
 			rf.mu.Unlock()
 
-			if again := rf.sendAppendEntries(context.Background(), "B", args); !again {
+			if again := rf.sendAppendEntries(context.Background(), "B", args, round); !again {
 				t.Fatalf("expected an immediate retry after a mismatch")
 			}
 			rf.mu.Lock()
@@ -467,13 +467,13 @@ func TestSendAppendEntries_SuccessAdvancesMatchAndCommit(t *testing.T) {
 	rf.mu.Lock()
 	rf.nextIndex["B"] = 1
 	rf.maxEntriesPerRPC = 2
-	args := rf.appendEntriesArgsLocked("B")
+	args, round := rf.appendEntriesArgsLocked("B")
 	rf.mu.Unlock()
 	if len(args.Entries) != 2 {
 		t.Fatalf("expected MaxEntriesPerRPC to cap the batch at 2, got %d", len(args.Entries))
 	}
 
-	if again := rf.sendAppendEntries(context.Background(), "B", args); !again {
+	if again := rf.sendAppendEntries(context.Background(), "B", args, round); !again {
 		t.Fatalf("expected an immediate follow-up while B is behind")
 	}
 	rf.mu.Lock()
@@ -492,7 +492,7 @@ func TestSendAppendEntries_ReplyForEarlierTermIsIgnored(t *testing.T) {
 
 	rf.sendAppendEntries(context.Background(), "B", &AppendEntriesArgs{
 		Term: 2, LeaderID: "A", PrevLogIndex: 0, Entries: entriesOfTerms(2, 3)[:1],
-	})
+	}, 0)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	if rf.matchIndex["B"] != 0 {
@@ -521,9 +521,9 @@ func TestSendAppendEntries_BrokenPeerLoggedOncePerTerm(t *testing.T) {
 
 	for range 3 {
 		rf.mu.Lock()
-		args := rf.appendEntriesArgsLocked("B")
+		args, round := rf.appendEntriesArgsLocked("B")
 		rf.mu.Unlock()
-		rf.sendAppendEntries(context.Background(), "B", args)
+		rf.sendAppendEntries(context.Background(), "B", args, round)
 	}
 	if n := strings.Count(logs.String(), "rejected a prefix"); n != 1 {
 		t.Fatalf("broken peer logged %d times, want once: %s", n, logs.String())
