@@ -24,6 +24,12 @@ type testCluster struct {
 	tr       *fakeTransport
 	// elections checks Election Safety on every leader change of every node.
 	elections *electionLog
+	// applied checks State Machine Safety on every applied command, and
+	// Leader Completeness on every leader change.
+	applied *applyLog
+	// leaderLogs is each node's log as of the last checkLogs call in which
+	// it was leader, to check Leader Append-Only.
+	leaderLogs map[NodeID]leaderLog
 }
 
 // Cluster tests run inside a synctest bubble: synctest.Wait tells when every
@@ -83,6 +89,8 @@ func newTestClusterWith(t *testing.T, timeouts []func() time.Duration, rands []*
 			t:       t,
 			leaders: map[Term]NodeID{},
 		},
+		applied:    newApplyLog(t, n),
+		leaderLogs: map[NodeID]leaderLog{},
 	}
 	for i := range n {
 		c.ids[i] = NodeID(fmt.Sprintf("n%d", i))
@@ -127,13 +135,18 @@ func (c *testCluster) start(i int) {
 		c.t.Fatalf("New(%s): %v", c.ids[i], err)
 	}
 	id := c.ids[i]
-	rf.onBecomeLeader = func(term Term) { c.elections.record(id, term) }
+	rf.onBecomeLeader = func(term Term) {
+		c.elections.record(id, term)
+		// Called under rf.mu, so the log can be read directly.
+		c.applied.checkLeaderCompleteness(id, term, rf.log)
+	}
 	c.tr.register(c.ids[i], rf)
 	c.tr.setPartitioned(c.ids[i], false)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	c.nodes[i], c.stops[i], c.done[i] = rf, cancel, done
+	gen := c.applied.restart(i)
 	go func() {
 		defer close(done)
 		rf.Run(ctx)
@@ -143,7 +156,8 @@ func (c *testCluster) start(i int) {
 			select {
 			case <-ctx.Done():
 				return
-			case <-applyCh:
+			case msg := <-applyCh:
+				c.applied.record(i, gen, msg)
 			}
 		}
 	}()
@@ -165,11 +179,12 @@ func (c *testCluster) crash(i int) {
 const tick = 10 * time.Millisecond
 
 // step lets the nodes settle, advances virtual time by one tick and waits
-// until every node has reacted to the timers it fired.
+// until every node has reacted to the timers it fired, then checks the logs.
 func (c *testCluster) step() {
 	synctest.Wait()
 	c.clock.Advance(tick)
 	synctest.Wait()
+	c.checkLogs()
 }
 
 // advance runs the cluster for d of virtual time.
@@ -555,10 +570,12 @@ func TestCluster_HealedOldLeaderStepsDown(t *testing.T) {
 	})
 }
 
-// TestCluster_RandomFaultsKeepElectionSafety runs a 5-node cluster through
-// random message loss, partitions and crash-restarts, checking Election
-// Safety on every election, then heals everything and expects a stable leader.
-func TestCluster_RandomFaultsKeepElectionSafety(t *testing.T) {
+// TestCluster_RandomFaultsKeepSafety runs a 5-node cluster through random
+// message loss, partitions and crash-restarts while clients submit commands.
+// The cluster checks every safety property of Figure 3 along the way; see
+// electionLog, applyLog and checkLogs. Then it heals everything and expects
+// a stable leader that commits a command on every node.
+func TestCluster_RandomFaultsKeepSafety(t *testing.T) {
 	for seed := range uint64(20) {
 		t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -577,7 +594,14 @@ func runRandomFaults(t *testing.T, seed uint64) {
 
 	faults := rand.New(rand.NewPCG(seed, 2000))
 	partitioned := make([]bool, n)
-	for range 3 * time.Second / tick {
+	for step := range 3 * time.Second / tick {
+		// Submit to every node that believes it leads, cut off or not, so
+		// deposed leaders pile up entries that must be overwritten.
+		if faults.Float64() < 0.3 {
+			for _, rf := range c.leaders() {
+				_, _, _ = rf.Start([]byte(fmt.Sprint("cmd", step)))
+			}
+		}
 		if faults.Float64() < 0.05 {
 			i := faults.IntN(n)
 			switch {
@@ -624,4 +648,5 @@ func runRandomFaults(t *testing.T, seed uint64) {
 	if term, isLeader := leader.GetState(); !isLeader || term != leaderTerm {
 		t.Fatalf("leader %s of a healed cluster was deposed: term %d -> %d", leader.id, leaderTerm, term)
 	}
+	c.one(t, "final", n)
 }

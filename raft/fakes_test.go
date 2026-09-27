@@ -225,6 +225,8 @@ type fakeTransport struct {
 	nodes       map[NodeID]RPCHandler
 	partitioned map[NodeID]bool
 	drop        func() bool
+	// appendEntries counts the AppendEntries requests delivered to each node.
+	appendEntries map[NodeID]int
 }
 
 var (
@@ -235,8 +237,9 @@ var (
 
 func newFakeTransport() *fakeTransport {
 	return &fakeTransport{
-		nodes:       map[NodeID]RPCHandler{},
-		partitioned: map[NodeID]bool{},
+		nodes:         map[NodeID]RPCHandler{},
+		partitioned:   map[NodeID]bool{},
+		appendEntries: map[NodeID]int{},
 	}
 }
 
@@ -256,6 +259,18 @@ func (f *fakeTransport) setDrop(drop func() bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.drop = drop
+}
+
+func (f *fakeTransport) appendEntriesTo(id NodeID) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.appendEntries[id]
+}
+
+func (f *fakeTransport) isPartitioned(id NodeID) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.partitioned[id]
 }
 
 func (f *fakeTransport) dropped() bool {
@@ -303,6 +318,9 @@ func (f *fakeTransport) AppendEntries(ctx context.Context, target NodeID, args *
 	if err != nil {
 		return nil, err
 	}
+	f.mu.Lock()
+	f.appendEntries[target]++
+	f.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
