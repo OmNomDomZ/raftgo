@@ -1,9 +1,13 @@
 package raft
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"slices"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -96,9 +100,120 @@ func TestReply_NilWithoutErrorIsAFailedRPC(t *testing.T) {
 	}
 }
 
+func TestReply_WrongTermIsAFailedRPC(t *testing.T) {
+	// A grant from another term is not a vote in this election, and a reply
+	// that breaks Figure 2 must not move the node to its term either.
+	for _, peerTerm := range []Term{1, 3} {
+		t.Run(fmt.Sprintf("peer term %d", peerTerm), func(t *testing.T) {
+			rf, _ := newTestNode(t, "A", "B", "C")
+			rf.transport.(*fakeTransport).register("B", wrongTermPeer{term: peerTerm})
+			setRoleAndTerm(rf, Candidate, 2, "A")
+			rf.votes = map[NodeID]struct{}{"A": {}}
+
+			rf.requestVote(context.Background(), "B", &RequestVoteArgs{Term: 2, CandidateID: "A"})
+			if role, term := roleAndTerm(rf); role != Candidate || term != 2 {
+				t.Fatalf("invalid RequestVote reply changed state: %v in term %d", role, term)
+			}
+
+			setRoleAndTerm(rf, Leader, 2, "A")
+			rf.sendHeartbeat(context.Background(), "B", &AppendEntriesArgs{Term: 2, LeaderID: "A"})
+			if role, term := roleAndTerm(rf); role != Leader || term != 2 {
+				t.Fatalf("invalid AppendEntries reply changed state: %v in term %d", role, term)
+			}
+		})
+	}
+}
+
+func TestReply_InvalidIsLoggedAsError(t *testing.T) {
+	// A lost message is routine; a reply that breaks the protocol is a bug in
+	// the peer or the transport and must not be hidden at debug level.
+	var logs bytes.Buffer
+	cfg := testConfig(&fakeStorage{}, "A", "B", "C")
+	cfg.Logger = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	rf, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	setRoleAndTerm(rf, Candidate, 2, "A")
+
+	// C is not registered, so the request is lost.
+	rf.requestVote(context.Background(), "C", &RequestVoteArgs{Term: 2, CandidateID: "A"})
+	rf.sendHeartbeat(context.Background(), "C", &AppendEntriesArgs{Term: 2, LeaderID: "A"})
+	if logs.Len() != 0 {
+		t.Fatalf("lost messages logged above debug level: %s", logs.String())
+	}
+
+	rf.transport.(*fakeTransport).register("B", wrongTermPeer{term: 1})
+	rf.requestVote(context.Background(), "B", &RequestVoteArgs{Term: 2, CandidateID: "A"})
+	rf.sendHeartbeat(context.Background(), "B", &AppendEntriesArgs{Term: 2, LeaderID: "A"})
+	for _, rpc := range []string{"RequestVote", "AppendEntries"} {
+		if !strings.Contains(logs.String(), "level=ERROR msg=\""+rpc+" failed\"") {
+			t.Fatalf("invalid %s reply not logged as an error: %s", rpc, logs.String())
+		}
+	}
+}
+
+func TestStartElection_PersistFailureDoesNotCampaign(t *testing.T) {
+	// A candidate must have durably voted for itself in its new term, or a
+	// restart could let it vote for another node in that term (§5.1).
+	synctest.Test(t, func(t *testing.T) {
+		rf, st := newTestNode(t, "A", "B", "C")
+		defer rf.wg.Wait()
+		setRoleAndTerm(rf, Follower, 2, "")
+		st.setFailSave(true)
+
+		rf.mu.Lock()
+		rf.startElectionLocked(context.Background())
+		rf.mu.Unlock()
+		if role, term := roleAndTerm(rf); role != Follower || term != 2 || votedFor(rf) != "" {
+			t.Fatalf("non-durable election changed state: %v in term %d, votedFor %q", role, term, votedFor(rf))
+		}
+		if !rf.electionTimer.Stop() {
+			t.Fatalf("election timer not armed, so the election is never retried")
+		}
+
+		st.setFailSave(false)
+		rf.mu.Lock()
+		rf.startElectionLocked(context.Background())
+		rf.mu.Unlock()
+		if role, term := roleAndTerm(rf); role != Candidate || term != 3 || votedFor(rf) != "A" {
+			t.Fatalf("expected a candidate of term 3 once storage recovers, got %v in term %d, votedFor %q",
+				role, term, votedFor(rf))
+		}
+		if state, _ := st.LoadState(); state.CurrentTerm != 3 || state.VotedFor != "A" {
+			t.Fatalf("self-vote not persisted: %+v", state)
+		}
+	})
+}
+
+func TestNotStarted_NodeAnswersNothing(t *testing.T) {
+	st := &fakeStorage{}
+	rf, err := New(testConfig(st, "A", "B", "C"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if reply, err := rf.HandleRequestVote(&RequestVoteArgs{Term: 1, CandidateID: "B"}); !errors.Is(err, ErrNotStarted) || reply != nil {
+		t.Fatalf("node answered RequestVote before Run: reply=%+v err=%v", reply, err)
+	}
+	if reply, err := rf.HandleAppendEntries(&AppendEntriesArgs{Term: 1, LeaderID: "B"}); !errors.Is(err, ErrNotStarted) || reply != nil {
+		t.Fatalf("node answered AppendEntries before Run: reply=%+v err=%v", reply, err)
+	}
+	if role, term := roleAndTerm(rf); role != Follower || term != 0 || st.saveCount() != 0 {
+		t.Fatalf("node changed state before Run: %v in term %d, %d saves", role, term, st.saveCount())
+	}
+	if rf.electionTimer.Stop() {
+		t.Fatalf("node armed its election timer before Run")
+	}
+}
+
 func stoppedNode(t *testing.T) (*Raft, *fakeStorage) {
 	t.Helper()
-	rf, st := newTestNode(t, "A", "B", "C")
+	st := &fakeStorage{}
+	rf, err := New(testConfig(st, "A", "B", "C"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	rf.Run(ctx)

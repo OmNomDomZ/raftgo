@@ -19,20 +19,39 @@ func testConfig(st Storage, id NodeID, peers ...NodeID) Config {
 		Transport:          newFakeTransport(),
 		Storage:            st,
 		Clock:              newFakeClock(time.Unix(0, 0)),
-		ElectionTimeout:    fixedTimeout(time.Second),
 		ElectionTimeoutMin: time.Second,
+		ElectionTimeoutMax: 2 * time.Second,
+		electionTimeout:    fixedTimeout(time.Second),
 		OnFatal:            panicOnFatal,
 	}
 }
 
+// newTestNode returns a node that answers RPCs but whose timers and RPCs
+// only move when the test drives them; see markRunning.
 func newTestNode(t *testing.T, id NodeID, peers ...NodeID) (*Raft, *fakeStorage) {
 	t.Helper()
 	st := &fakeStorage{}
+	return restartTestNode(t, st, id, peers...), st
+}
+
+// restartTestNode is newTestNode for a node restoring its state from st.
+func restartTestNode(t *testing.T, st *fakeStorage, id NodeID, peers ...NodeID) *Raft {
+	t.Helper()
 	rf, err := New(testConfig(st, id, peers...))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	return rf, st
+	markRunning(rf)
+	return rf
+}
+
+// markRunning puts rf in the state Run leaves it in, without starting Run's
+// loop, so a test can call handlers and timeouts by hand.
+func markRunning(rf *Raft) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	rf.started = true
+	rf.done = make(chan struct{})
 }
 
 func setRoleAndTerm(rf *Raft, role Role, term Term, votedFor NodeID) {

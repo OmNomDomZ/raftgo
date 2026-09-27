@@ -3,9 +3,10 @@ package raft
 import "context"
 
 // Run drives the node until ctx is done, then waits for its in-flight RPCs to
-// finish. It must be called exactly once, after New. Once ctx is done the node
-// is stopped for good: it reports itself as a non-leader and its RPC handlers
-// return ErrStopped.
+// finish. It must be called exactly once, after New; until then the RPC
+// handlers return ErrNotStarted. Once ctx is done the node is stopped for
+// good: it reports itself as a non-leader and its RPC handlers return
+// ErrStopped.
 func (rf *Raft) Run(ctx context.Context) {
 	rf.mu.Lock()
 	if rf.started {

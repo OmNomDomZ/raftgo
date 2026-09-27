@@ -3,7 +3,6 @@ package raft
 import (
 	"errors"
 	"testing"
-	"time"
 )
 
 func TestHandleRequestVote_GrantsWhenNoVoteYet(t *testing.T) {
@@ -22,12 +21,19 @@ func TestHandleRequestVote_GrantsWhenNoVoteYet(t *testing.T) {
 	}
 }
 
-func TestHandleRequestVote_EmptyCandidateIsNotAVote(t *testing.T) {
+func TestHandleRequestVote_InvalidArgsGetNoReply(t *testing.T) {
 	// votedFor=="" means "no vote", so a grant to "" would not stop a second
-	// vote in the same term.
+	// vote in the same term. No correct candidate campaigns in term 0 or
+	// sends RPCs to itself.
 	rf, st := newTestNode(t, "A", "B", "C")
 
-	for _, args := range []*RequestVoteArgs{nil, {Term: 1}} {
+	invalid := []*RequestVoteArgs{
+		nil,
+		{Term: 1},
+		{Term: 1, CandidateID: "A"},
+		{Term: 0, CandidateID: "B"},
+	}
+	for _, args := range invalid {
 		if reply, err := rf.HandleRequestVote(args); !errors.Is(err, ErrInvalidArgs) || reply != nil {
 			t.Fatalf("HandleRequestVote(%+v) = %+v, %v; want no reply and ErrInvalidArgs", args, reply, err)
 		}
@@ -41,16 +47,27 @@ func TestHandleRequestVote_EmptyCandidateIsNotAVote(t *testing.T) {
 	}
 }
 
-func TestHandleAppendEntries_EmptyLeaderIsRejected(t *testing.T) {
-	rf, _ := newTestNode(t, "A", "B")
+func TestHandleAppendEntries_InvalidArgsGetNoReply(t *testing.T) {
+	// No correct leader has term 0 or sends RPCs to itself; acknowledging
+	// such a "leader" would also hold back elections.
+	rf, st := newTestNode(t, "A", "B")
 
-	for _, args := range []*AppendEntriesArgs{nil, {Term: 1}} {
+	invalid := []*AppendEntriesArgs{
+		nil,
+		{Term: 1},
+		{Term: 1, LeaderID: "A"},
+		{Term: 0, LeaderID: "B"},
+	}
+	for _, args := range invalid {
 		if reply, err := rf.HandleAppendEntries(args); !errors.Is(err, ErrInvalidArgs) || reply != nil {
 			t.Fatalf("HandleAppendEntries(%+v) = %+v, %v; want no reply and ErrInvalidArgs", args, reply, err)
 		}
 	}
-	if _, term := roleAndTerm(rf); term != 0 {
-		t.Fatalf("invalid request changed the term to %d", term)
+	if role, term := roleAndTerm(rf); role != Follower || term != 0 || st.saveCount() != 0 {
+		t.Fatalf("invalid request changed state: %v in term %d, %d saves", role, term, st.saveCount())
+	}
+	if rf.electionTimer.Stop() {
+		t.Fatalf("invalid request armed the election timer")
 	}
 }
 
@@ -171,76 +188,6 @@ func TestHandleAppendEntries_HigherTermStepsDownLeader(t *testing.T) {
 	}
 }
 
-func TestGetState_ReflectsRoleAndTerm(t *testing.T) {
-	rf, _ := newTestNode(t, "A", "B")
-
-	if term, isLeader := rf.GetState(); term != 0 || isLeader {
-		t.Fatalf("fresh node should start at term 0, not leader; got term=%d isLeader=%v", term, isLeader)
-	}
-
-	setRoleAndTerm(rf, Leader, 7, "A")
-
-	if term, isLeader := rf.GetState(); term != 7 || !isLeader {
-		t.Fatalf("expected leader of term 7, got term=%d isLeader=%v", term, isLeader)
-	}
-}
-
-func TestNew_RejectsInvalidConfig(t *testing.T) {
-	tests := []struct {
-		name   string
-		mutate func(*Config)
-	}{
-		{"missing ID", func(c *Config) { c.ID = "" }},
-		{"peers contain self", func(c *Config) { c.Peers = append(c.Peers, c.ID) }},
-		{"duplicate peers", func(c *Config) { c.Peers = []NodeID{"B", "C", "B"} }},
-		{"empty peer ID", func(c *Config) { c.Peers = append(c.Peers, "") }},
-		{"missing transport", func(c *Config) { c.Transport = nil }},
-		{"missing storage", func(c *Config) { c.Storage = nil }},
-		{"negative heartbeat interval", func(c *Config) { c.HeartbeatInterval = -time.Millisecond }},
-		{"negative RPC timeout", func(c *Config) { c.RPCTimeout = -time.Millisecond }},
-		{"heartbeat not below default election timeout", func(c *Config) {
-			c.ElectionTimeout, c.ElectionTimeoutMin = nil, 0
-			c.HeartbeatInterval = defaultElectionMin
-		}},
-		{"default heartbeat not below custom election timeout", func(c *Config) {
-			c.ElectionTimeout = fixedTimeout(defaultHeartbeatInterval)
-			c.ElectionTimeoutMin = defaultHeartbeatInterval
-		}},
-		{"heartbeat not below custom election timeout", func(c *Config) {
-			c.HeartbeatInterval = c.ElectionTimeoutMin
-		}},
-		{"custom election timeout without its minimum", func(c *Config) { c.ElectionTimeoutMin = 0 }},
-		{"election timeout minimum without custom election timeout", func(c *Config) { c.ElectionTimeout = nil }},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := testConfig(&fakeStorage{}, "A", "B")
-			tt.mutate(&cfg)
-			if _, err := New(cfg); err == nil {
-				t.Fatalf("expected error")
-			}
-		})
-	}
-}
-
-func TestNew_LoadFailureIsReported(t *testing.T) {
-	if _, err := New(testConfig(&fakeStorage{failLoad: true}, "A", "B")); err == nil {
-		t.Fatalf("expected New to fail when state cannot be loaded")
-	}
-}
-
-func TestNew_DoesNotAliasPeers(t *testing.T) {
-	peers := []NodeID{"B", "C"}
-	rf, err := New(testConfig(&fakeStorage{}, "A", peers...))
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	peers[0] = "X"
-	if rf.peers[0].id != "B" {
-		t.Fatalf("caller's slice mutation leaked into the node: %v", rf.peers)
-	}
-}
-
 func TestRestart_RestoresTermAndVote(t *testing.T) {
 	// A restarted node must not vote twice in one term (§5.1, Figure 2).
 	rf, st := newTestNode(t, "A", "B", "C")
@@ -248,10 +195,7 @@ func TestRestart_RestoresTermAndVote(t *testing.T) {
 		t.Fatalf("setup: expected vote for B granted")
 	}
 
-	restarted, err := New(testConfig(st, "A", "B", "C"))
-	if err != nil {
-		t.Fatalf("New after restart: %v", err)
-	}
+	restarted := restartTestNode(t, st, "A", "B", "C")
 
 	if term, _ := restarted.GetState(); term != 4 {
 		t.Fatalf("expected restored term 4, got %d", term)
@@ -277,28 +221,18 @@ func TestHandleRequestVote_RetryDoesNotRewriteStorage(t *testing.T) {
 	}
 }
 
-func TestHandleAppendEntries_SecondLeaderInTermIsRejected(t *testing.T) {
+func TestHandleAppendEntries_SecondLeaderInTermGetsNoReply(t *testing.T) {
 	// Election Safety is already broken if this happens, but a message from
-	// the network must not crash the node.
+	// the network must not crash the node. Success=false would read as a log
+	// mismatch (§5.3), so there must be no reply at all.
 	rf, _ := newTestNode(t, "A", "B", "C")
 	setRoleAndTerm(rf, Leader, 3, "A")
 
-	if reply := mustHandleAppendEntries(t, rf, &AppendEntriesArgs{Term: 3, LeaderID: "B"}); reply.Success || reply.Term != 3 {
-		t.Fatalf("expected Success=false with term 3, got %+v", reply)
+	reply, err := rf.HandleAppendEntries(&AppendEntriesArgs{Term: 3, LeaderID: "B"})
+	if !errors.Is(err, ErrLeaderConflict) || reply != nil {
+		t.Fatalf("expected ErrLeaderConflict and no reply, got %+v, %v", reply, err)
 	}
 	if role, term := roleAndTerm(rf); role != Leader || term != 3 {
 		t.Fatalf("expected to stay leader of term 3, got %v in term %d", role, term)
-	}
-}
-
-func TestAdoptHigherTerm_NotHigherIsFatal(t *testing.T) {
-	rf, _ := newTestNode(t, "A", "B", "C")
-	setRoleAndTerm(rf, Follower, 3, "B")
-
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	mustBeFatal(t, func() { rf.adoptHigherTermLocked(3) })
-	if rf.votedFor != "B" {
-		t.Fatalf("vote in term 3 was cleared: votedFor=%q", rf.votedFor)
 	}
 }

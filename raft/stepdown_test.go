@@ -42,7 +42,7 @@ func TestHeartbeatReply_HigherTermStepsDownDespitePersistFailure(t *testing.T) {
 	}
 }
 
-func TestHandleRequestVote_NonDurableTermDeclinesUntilStorageRecovers(t *testing.T) {
+func TestHandleRequestVote_NonDurableTermGetsNoReplyUntilStorageRecovers(t *testing.T) {
 	rf, st := newTestNode(t, "A", "B", "C")
 	setRoleAndTerm(rf, Candidate, 2, "A")
 	st.setFailSave(true)
@@ -65,7 +65,7 @@ func TestHandleRequestVote_NonDurableTermDeclinesUntilStorageRecovers(t *testing
 	}
 }
 
-func TestHandleAppendEntries_NonDurableTermRejectsUntilStorageRecovers(t *testing.T) {
+func TestHandleAppendEntries_NonDurableTermGetsNoReplyUntilStorageRecovers(t *testing.T) {
 	rf, st := newTestNode(t, "A", "B", "C")
 	setRoleAndTerm(rf, Leader, 1, "A")
 	st.setFailSave(true)
@@ -104,10 +104,7 @@ func TestRestart_AfterNonDurableStepDownKeepsDurableVote(t *testing.T) {
 	}
 	st.setFailSave(false)
 
-	restarted, err := New(testConfig(st, "A", "B", "C"))
-	if err != nil {
-		t.Fatalf("New after restart: %v", err)
-	}
+	restarted := restartTestNode(t, st, "A", "B", "C")
 
 	if term, _ := restarted.GetState(); term != 1 {
 		t.Fatalf("expected durable term 1 after restart, got %d", term)

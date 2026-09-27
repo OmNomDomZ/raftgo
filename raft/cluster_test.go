@@ -16,7 +16,8 @@ type testCluster struct {
 	nodes    []*Raft
 	ids      []NodeID
 	storages []*fakeStorage
-	timeouts []func() time.Duration
+	timeouts []func() time.Duration // nil: drawn from rands[i]
+	rands    []*rand.Rand
 	stops    []context.CancelFunc
 	done     []chan struct{}
 	clock    *fakeClock
@@ -29,9 +30,12 @@ type testCluster struct {
 // node goroutine has finished reacting to a tick, so the tests never sleep and
 // time exists only as fakeClock's virtual time.
 
-// clusterElectionMin is a lower bound of every election timeout used in
-// cluster tests.
-const clusterElectionMin = 100 * time.Millisecond
+// clusterElectionMin and clusterElectionMax bound every election timeout used
+// in cluster tests.
+const (
+	clusterElectionMin = 100 * time.Millisecond
+	clusterElectionMax = 400 * time.Millisecond
+)
 
 // newTestCluster starts n fully-connected nodes. Node i gets a fixed election
 // timeout of 100ms+10ms*i, so n0 always times out first.
@@ -47,6 +51,22 @@ func newTestCluster(t *testing.T, n int) *testCluster {
 // newTestClusterWithTimeouts starts one node per election-timeout source.
 func newTestClusterWithTimeouts(t *testing.T, timeouts []func() time.Duration) *testCluster {
 	t.Helper()
+	return newTestClusterWith(t, timeouts, make([]*rand.Rand, len(timeouts)))
+}
+
+// newRandomizedTestCluster starts n nodes that randomize their election
+// timeouts through Config.Rand, as in production, seeded from seed.
+func newRandomizedTestCluster(t *testing.T, n int, seed uint64) *testCluster {
+	t.Helper()
+	rands := make([]*rand.Rand, n)
+	for i := range rands {
+		rands[i] = rand.New(rand.NewPCG(seed, uint64(i)))
+	}
+	return newTestClusterWith(t, make([]func() time.Duration, n), rands)
+}
+
+func newTestClusterWith(t *testing.T, timeouts []func() time.Duration, rands []*rand.Rand) *testCluster {
+	t.Helper()
 	n := len(timeouts)
 	c := &testCluster{
 		t:        t,
@@ -54,6 +74,7 @@ func newTestClusterWithTimeouts(t *testing.T, timeouts []func() time.Duration) *
 		ids:      make([]NodeID, n),
 		storages: make([]*fakeStorage, n),
 		timeouts: timeouts,
+		rands:    rands,
 		stops:    make([]context.CancelFunc, n),
 		done:     make([]chan struct{}, n),
 		clock:    newFakeClock(time.Unix(0, 0)),
@@ -94,8 +115,10 @@ func (c *testCluster) start(i int) {
 		Transport:          c.tr,
 		Storage:            c.storages[i],
 		Clock:              c.clock,
-		ElectionTimeout:    c.timeouts[i],
 		ElectionTimeoutMin: clusterElectionMin,
+		ElectionTimeoutMax: clusterElectionMax,
+		Rand:               c.rands[i],
+		electionTimeout:    c.timeouts[i],
 		OnFatal:            panicOnFatal,
 	})
 	if err != nil {
@@ -536,15 +559,7 @@ func TestCluster_RandomFaultsKeepElectionSafety(t *testing.T) {
 
 func runRandomFaults(t *testing.T, seed uint64) {
 	const n = 5
-	timeouts := make([]func() time.Duration, n)
-	for i := range timeouts {
-		// Each node's source is only called under that node's mu.
-		r := rand.New(rand.NewPCG(seed, uint64(i)))
-		timeouts[i] = func() time.Duration {
-			return defaultElectionMin + time.Duration(r.Int64N(int64(defaultElectionMax-defaultElectionMin)))
-		}
-	}
-	c := newTestClusterWithTimeouts(t, timeouts)
+	c := newRandomizedTestCluster(t, n, seed)
 
 	dropRNG := rand.New(rand.NewPCG(seed, 1000)) // called under the transport's mu
 	c.tr.setDrop(func() bool { return dropRNG.Float64() < 0.1 })
@@ -590,7 +605,7 @@ func runRandomFaults(t *testing.T, seed uint64) {
 			leader, leaderTerm = leaders[0], term
 			return false
 		}
-		c.advance(defaultElectionMax)
+		c.advance(clusterElectionMax)
 		term, isLeader := leader.GetState()
 		return isLeader && term == leaderTerm
 	})

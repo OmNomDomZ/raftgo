@@ -53,13 +53,15 @@ type Config struct {
 	Storage   Storage
 	Clock     Clock // default SystemClock
 
-	// ElectionTimeout must return a freshly randomized duration on every call
-	// (§5.2). Default: uniform in [150ms, 300ms).
-	ElectionTimeout func() time.Duration
-	// ElectionTimeoutMin is the smallest duration ElectionTimeout can return.
-	// It is required with a custom ElectionTimeout and must be left zero
-	// otherwise; it is only used to validate HeartbeatInterval.
+	// The election timeout is drawn uniformly from [ElectionTimeoutMin,
+	// ElectionTimeoutMax) on every reset, so split votes resolve (§5.2).
+	// Default: [150ms, 300ms).
 	ElectionTimeoutMin time.Duration
+	ElectionTimeoutMax time.Duration
+	// Rand is the source of election timeouts. It is only used under the
+	// node's lock, so it must not be shared between nodes. Default: the
+	// global math/rand/v2 source.
+	Rand *rand.Rand
 	// HeartbeatInterval must stay well below the minimum election timeout, or
 	// followers will start elections while the leader is healthy (§5.2). It
 	// also bounds each heartbeat RPC. Default: 50ms.
@@ -70,10 +72,16 @@ type Config struct {
 	Logger *slog.Logger // default discards everything
 
 	// OnFatal is called when a protocol invariant is broken and must not
-	// return: carrying on could violate safety. Default: os.Exit(1). A panic
-	// is not a safe default, since a transport serving RPCs may recover it
-	// (net/http does) and leave the node running.
+	// return: carrying on could violate safety. Default: print msg to stderr
+	// and exit with status 1, so the reason survives the discarding default
+	// Logger. A panic is not a safe default, since a transport serving RPCs
+	// may recover it (net/http does) and leave the node running.
 	OnFatal func(msg string)
+
+	// electionTimeout, if set, replaces the randomized election timeout so
+	// tests can script which node times out first. A duration outside
+	// [ElectionTimeoutMin, ElectionTimeoutMax) is reported through OnFatal.
+	electionTimeout func() time.Duration
 }
 
 func (c *Config) validateAndSetDefaults() error {
@@ -108,14 +116,16 @@ func (c *Config) validateAndSetDefaults() error {
 	if c.RPCTimeout < 0 {
 		errs = append(errs, fmt.Errorf("negative RPC timeout %v", c.RPCTimeout))
 	}
-	electionMin := defaultElectionMin
-	switch {
-	case c.ElectionTimeout == nil && c.ElectionTimeoutMin != 0:
-		errs = append(errs, errors.New("ElectionTimeoutMin is set without a custom ElectionTimeout"))
-	case c.ElectionTimeout != nil && c.ElectionTimeoutMin <= 0:
-		errs = append(errs, errors.New("ElectionTimeoutMin is required with a custom ElectionTimeout"))
-	case c.ElectionTimeout != nil:
-		electionMin = c.ElectionTimeoutMin
+	if c.ElectionTimeoutMin < 0 || c.ElectionTimeoutMax < 0 {
+		errs = append(errs, fmt.Errorf("negative election timeout bounds [%v, %v)",
+			c.ElectionTimeoutMin, c.ElectionTimeoutMax))
+	}
+	electionMin := cmp.Or(c.ElectionTimeoutMin, defaultElectionMin)
+	electionMax := cmp.Or(c.ElectionTimeoutMax, defaultElectionMax)
+	// An empty range would give every node the same timeout, and split votes
+	// could repeat forever (§5.2).
+	if electionMax <= electionMin {
+		errs = append(errs, fmt.Errorf("election timeout max %v must be above min %v", electionMax, electionMin))
 	}
 	if hb := cmp.Or(c.HeartbeatInterval, defaultHeartbeatInterval); hb >= electionMin {
 		errs = append(errs, fmt.Errorf("heartbeat interval %v must be below the minimum election timeout %v",
@@ -128,9 +138,13 @@ func (c *Config) validateAndSetDefaults() error {
 	if c.Clock == nil {
 		c.Clock = SystemClock{}
 	}
-	if c.ElectionTimeout == nil {
-		c.ElectionTimeout = func() time.Duration {
-			return defaultElectionMin + rand.N(defaultElectionMax-defaultElectionMin)
+	c.ElectionTimeoutMin, c.ElectionTimeoutMax = electionMin, electionMax
+	if c.electionTimeout == nil {
+		span := electionMax - electionMin
+		if r := c.Rand; r != nil {
+			c.electionTimeout = func() time.Duration { return electionMin + time.Duration(r.Int64N(int64(span))) }
+		} else {
+			c.electionTimeout = func() time.Duration { return electionMin + rand.N(span) }
 		}
 	}
 	if c.HeartbeatInterval == 0 {
@@ -140,7 +154,10 @@ func (c *Config) validateAndSetDefaults() error {
 		c.RPCTimeout = defaultRPCTimeout
 	}
 	if c.OnFatal == nil {
-		c.OnFatal = func(string) { os.Exit(1) }
+		c.OnFatal = func(msg string) {
+			fmt.Fprintln(os.Stderr, msg)
+			os.Exit(1)
+		}
 	}
 	return nil
 }
@@ -174,6 +191,8 @@ type Raft struct {
 	storage           Storage
 	clock             Clock
 	electionTimeout   func() time.Duration
+	electionMin       time.Duration
+	electionMax       time.Duration
 	heartbeatInterval time.Duration
 	rpcTimeout        time.Duration
 	logger            *slog.Logger
@@ -232,7 +251,9 @@ func New(cfg Config) (*Raft, error) {
 		transport:         cfg.Transport,
 		storage:           cfg.Storage,
 		clock:             cfg.Clock,
-		electionTimeout:   cfg.ElectionTimeout,
+		electionTimeout:   cfg.electionTimeout,
+		electionMin:       cfg.ElectionTimeoutMin,
+		electionMax:       cfg.ElectionTimeoutMax,
 		heartbeatInterval: cfg.HeartbeatInterval,
 		rpcTimeout:        cfg.RPCTimeout,
 		logger:            cfg.Logger.With("node", cfg.ID),
@@ -333,6 +354,13 @@ func (rf *Raft) adoptHigherTermLocked(term Term) {
 
 func (rf *Raft) resetElectionTimerLocked() {
 	d := rf.electionTimeout()
+	// HeartbeatInterval was only validated against electionMin, and a leader
+	// stays up only while its heartbeats beat every follower's timeout (§5.2).
+	// The randomized default stays in range by construction; only the test
+	// hook can break this.
+	if d < rf.electionMin || d >= rf.electionMax {
+		rf.fatalf("election timeout %v outside [%v, %v)", d, rf.electionMin, rf.electionMax)
+	}
 	rf.electionDeadline = rf.clock.Now().Add(d)
 	rf.electionTimer.Reset(d)
 }

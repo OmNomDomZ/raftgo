@@ -280,6 +280,18 @@ func (grantingPeer) HandleAppendEntries(args *AppendEntriesArgs) (*AppendEntries
 	return &AppendEntriesReply{Term: args.Term, Success: true}, nil
 }
 
+// wrongTermPeer grants every vote and acknowledges every heartbeat, but in
+// a fixed term whatever the request's, which no correct peer does.
+type wrongTermPeer struct{ term Term }
+
+func (p wrongTermPeer) HandleRequestVote(*RequestVoteArgs) (*RequestVoteReply, error) {
+	return &RequestVoteReply{Term: p.term, VoteGranted: true}, nil
+}
+
+func (p wrongTermPeer) HandleAppendEntries(*AppendEntriesArgs) (*AppendEntriesReply, error) {
+	return &AppendEntriesReply{Term: p.term, Success: true}, nil
+}
+
 // blockingTransport holds every RPC until its context is done, then reports
 // the RPC's term on released.
 type blockingTransport struct{ released chan Term }

@@ -1,6 +1,9 @@
 package raft
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 func (rf *Raft) onHeartbeatTimeout(ctx context.Context) {
 	rf.mu.Lock()
@@ -53,11 +56,11 @@ func (rf *Raft) sendHeartbeat(ctx context.Context, peer NodeID, args *AppendEntr
 	ctx, cancel := context.WithTimeout(ctx, rf.heartbeatInterval)
 	defer cancel()
 	reply, err := rf.transport.AppendEntries(ctx, peer, args)
-	if err == nil && reply == nil {
-		err = errNilReply
+	if err == nil {
+		err = checkAppendEntriesReply(args, reply)
 	}
 	if err != nil {
-		rf.logger.Debug("AppendEntries failed", "peer", peer, "term", args.Term, "err", err)
+		rf.logRPCFailure("AppendEntries", peer, args.Term, err)
 		return
 	}
 
@@ -66,4 +69,18 @@ func (rf *Raft) sendHeartbeat(ctx context.Context, peer NodeID, args *AppendEntr
 	if !rf.stoppedLocked() && reply.Term > rf.currentTerm {
 		rf.adoptHigherTermLocked(reply.Term)
 	}
+}
+
+// checkAppendEntriesReply rejects replies no correct peer sends; see
+// checkVoteReply.
+func checkAppendEntriesReply(args *AppendEntriesArgs, reply *AppendEntriesReply) error {
+	switch {
+	case reply == nil:
+		return errNilReply
+	case reply.Term < args.Term:
+		return fmt.Errorf("%w: AppendEntries reply term %d below request term %d", errInvalidReply, reply.Term, args.Term)
+	case reply.Success && reply.Term != args.Term:
+		return fmt.Errorf("%w: success in term %d for request term %d", errInvalidReply, reply.Term, args.Term)
+	}
+	return nil
 }

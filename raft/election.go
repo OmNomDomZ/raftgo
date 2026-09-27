@@ -3,9 +3,14 @@ package raft
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 )
 
-var errNilReply = errors.New("raft: transport returned a nil reply without an error")
+var (
+	errNilReply     = errors.New("raft: transport returned a nil reply without an error")
+	errInvalidReply = errors.New("raft: invalid reply")
+)
 
 func (rf *Raft) onElectionTimeout(ctx context.Context) {
 	rf.mu.Lock()
@@ -55,11 +60,11 @@ func (rf *Raft) requestVote(ctx context.Context, peer NodeID, args *RequestVoteA
 	ctx, cancel := context.WithTimeout(ctx, rf.rpcTimeout)
 	defer cancel()
 	reply, err := rf.transport.RequestVote(ctx, peer, args)
-	if err == nil && reply == nil {
-		err = errNilReply
+	if err == nil {
+		err = checkVoteReply(args, reply)
 	}
 	if err != nil {
-		rf.logger.Debug("RequestVote failed", "peer", peer, "term", args.Term, "err", err)
+		rf.logRPCFailure("RequestVote", peer, args.Term, err)
 		return
 	}
 
@@ -81,4 +86,30 @@ func (rf *Raft) requestVote(ctx context.Context, peer NodeID, args *RequestVoteA
 	if len(rf.votes) >= rf.quorum() {
 		rf.becomeLeaderLocked()
 	}
+}
+
+// logRPCFailure logs an outgoing RPC that got no usable reply. A lost
+// message is routine, but a reply that breaks the protocol means the peer or
+// the transport is buggy.
+func (rf *Raft) logRPCFailure(rpc string, peer NodeID, term Term, err error) {
+	level := slog.LevelDebug
+	if errors.Is(err, errInvalidReply) || errors.Is(err, errNilReply) {
+		level = slog.LevelError
+	}
+	rf.logger.Log(context.Background(), level, rpc+" failed", "peer", peer, "term", term, "err", err)
+}
+
+// checkVoteReply rejects replies no correct peer sends. A receiver adopts a
+// higher request term before answering, so its reply term is never lower,
+// and it only grants votes in the request's term (Figure 2).
+func checkVoteReply(args *RequestVoteArgs, reply *RequestVoteReply) error {
+	switch {
+	case reply == nil:
+		return errNilReply
+	case reply.Term < args.Term:
+		return fmt.Errorf("%w: RequestVote reply term %d below request term %d", errInvalidReply, reply.Term, args.Term)
+	case reply.VoteGranted && reply.Term != args.Term:
+		return fmt.Errorf("%w: vote granted in term %d for request term %d", errInvalidReply, reply.Term, args.Term)
+	}
+	return nil
 }
