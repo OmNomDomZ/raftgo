@@ -103,6 +103,7 @@ func newTestClusterWith(t *testing.T, timeouts []func() time.Duration, rands []*
 		for i := range n {
 			c.crash(i)
 		}
+		c.tr.close()
 	})
 	return c
 }
@@ -579,18 +580,51 @@ func TestCluster_RandomFaultsKeepSafety(t *testing.T) {
 	for seed := range uint64(20) {
 		t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				runRandomFaults(t, seed)
+				runRandomFaults(t, seed, false)
 			})
 		})
 	}
 }
 
-func runRandomFaults(t *testing.T, seed uint64) {
+// TestCluster_RandomDelaysKeepSafety adds random latency to the faults of
+// TestCluster_RandomFaultsKeepSafety. Some messages outlive their sender's
+// timeout, so requests arrive late and out of order: an AppendEntries after
+// a newer one of the same leader, or at a node that has restarted since.
+func TestCluster_RandomDelaysKeepSafety(t *testing.T) {
+	late := 0
+	// More seeds than TestCluster_RandomFaultsKeepSafety: a reordering bug
+	// needs an unlucky late message, which only some runs produce.
+	for seed := range uint64(100) {
+		t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				late += runRandomFaults(t, seed, true)
+			})
+		})
+	}
+	// Per seed it depends on how much traffic the faults let through.
+	if late == 0 && !t.Failed() {
+		t.Fatalf("setup: no request arrived after its sender gave up on it")
+	}
+}
+
+// runRandomFaults returns how many requests arrived after their sender had
+// given up on them.
+func runRandomFaults(t *testing.T, seed uint64, delays bool) (late int) {
 	const n = 5
 	c := newRandomizedTestCluster(t, n, seed)
 
 	dropRNG := rand.New(rand.NewPCG(seed, 1000)) // called under the transport's mu
 	c.tr.setDrop(func() bool { return dropRNG.Float64() < 0.1 })
+	if delays {
+		// Mostly well within AppendEntriesTimeout, sometimes far beyond it.
+		delayRNG := rand.New(rand.NewPCG(seed, 3000)) // called under the transport's mu
+		c.tr.setDelay(c.clock, func() time.Duration {
+			if delayRNG.Float64() < 0.2 {
+				return 60*time.Millisecond + time.Duration(delayRNG.Int64N(int64(240*time.Millisecond)))
+			}
+			return time.Duration(delayRNG.Int64N(int64(20 * time.Millisecond)))
+		})
+	}
 
 	faults := rand.New(rand.NewPCG(seed, 2000))
 	partitioned := make([]bool, n)
@@ -618,7 +652,9 @@ func runRandomFaults(t *testing.T, seed uint64) {
 		c.step()
 	}
 
+	late = c.tr.lateCount()
 	c.tr.setDrop(nil)
+	c.tr.setDelay(nil, nil)
 	for i := range n {
 		if c.stops[i] == nil {
 			c.start(i)
@@ -649,4 +685,5 @@ func runRandomFaults(t *testing.T, seed uint64) {
 		t.Fatalf("leader %s of a healed cluster was deposed: term %d -> %d", leader.id, leaderTerm, term)
 	}
 	c.one(t, "final", n)
+	return late
 }
