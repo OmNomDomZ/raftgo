@@ -24,9 +24,12 @@ jobs:
             echo "$fmt_out"
             exit 1
           fi
-      - uses: golangci/golangci-lint-action@v6
+      - uses: golangci/golangci-lint-action@v8
         with:
-          version: latest
+          version: v2.13.1
+          # Build from source with the go.mod toolchain: a prebuilt binary
+          # compiled with an older Go refuses to lint this module.
+          install-mode: goinstall
 
   test:
     runs-on: ubuntu-latest
