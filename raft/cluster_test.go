@@ -118,7 +118,7 @@ func (c *testCluster) start(i int) {
 		ElectionTimeoutMin: clusterElectionMin,
 		ElectionTimeoutMax: clusterElectionMax,
 		Rand:               c.rands[i],
-		electionTimeout:    c.timeouts[i],
+		electionTimeout:    boundedTimeout(c.t, clusterElectionMin, clusterElectionMax, c.timeouts[i]),
 		OnFatal:            panicOnFatal,
 	})
 	if err != nil {

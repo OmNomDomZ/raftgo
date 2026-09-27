@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"sync"
+	"testing"
 	"time"
 )
 
@@ -113,6 +114,24 @@ func seqTimeout(ds ...time.Duration) func() time.Duration {
 		defer mu.Unlock()
 		d := ds[min(i, len(ds)-1)]
 		i++
+		return d
+	}
+}
+
+// boundedTimeout fails t whenever f returns a duration outside [lo, hi).
+// HeartbeatInterval is only validated against the minimum, so a scripted
+// timeout outside the configured bounds would test an unsupported setup. A
+// nil f stays nil, so the node draws its own randomized timeouts.
+func boundedTimeout(t testing.TB, lo, hi time.Duration, f func() time.Duration) func() time.Duration {
+	if f == nil {
+		return nil
+	}
+	return func() time.Duration {
+		d := f()
+		if d < lo || d >= hi {
+			// Errorf, not Fatalf: this runs on the nodes' goroutines.
+			t.Errorf("scripted election timeout %v outside [%v, %v)", d, lo, hi)
+		}
 		return d
 	}
 }

@@ -119,24 +119,6 @@ func TestNew_ElectionTimeoutIsRandomizedWithinBounds(t *testing.T) {
 	}
 }
 
-func TestElectionTimeout_OutOfBoundsIsFatal(t *testing.T) {
-	// HeartbeatInterval is only validated against ElectionTimeoutMin, so a
-	// scripted timeout outside the bounds would test an unsupported setup.
-	for _, d := range []time.Duration{time.Second - 1, 2 * time.Second} {
-		t.Run(d.String(), func(t *testing.T) {
-			cfg := testConfig(&fakeStorage{}, "A", "B")
-			cfg.electionTimeout = fixedTimeout(d)
-			rf, err := New(cfg)
-			if err != nil {
-				t.Fatalf("New: %v", err)
-			}
-			rf.mu.Lock()
-			defer rf.mu.Unlock()
-			mustBeFatal(t, rf.resetElectionTimerLocked)
-		})
-	}
-}
-
 func TestNew_DefaultElectionTimeoutBounds(t *testing.T) {
 	cfg := testConfig(&fakeStorage{}, "A", "B")
 	cfg.electionTimeout = nil

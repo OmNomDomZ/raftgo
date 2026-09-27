@@ -79,8 +79,7 @@ type Config struct {
 	OnFatal func(msg string)
 
 	// electionTimeout, if set, replaces the randomized election timeout so
-	// tests can script which node times out first. A duration outside
-	// [ElectionTimeoutMin, ElectionTimeoutMax) is reported through OnFatal.
+	// tests can script which node times out first.
 	electionTimeout func() time.Duration
 }
 
@@ -191,8 +190,6 @@ type Raft struct {
 	storage           Storage
 	clock             Clock
 	electionTimeout   func() time.Duration
-	electionMin       time.Duration
-	electionMax       time.Duration
 	heartbeatInterval time.Duration
 	rpcTimeout        time.Duration
 	logger            *slog.Logger
@@ -252,8 +249,6 @@ func New(cfg Config) (*Raft, error) {
 		storage:           cfg.Storage,
 		clock:             cfg.Clock,
 		electionTimeout:   cfg.electionTimeout,
-		electionMin:       cfg.ElectionTimeoutMin,
-		electionMax:       cfg.ElectionTimeoutMax,
 		heartbeatInterval: cfg.HeartbeatInterval,
 		rpcTimeout:        cfg.RPCTimeout,
 		logger:            cfg.Logger.With("node", cfg.ID),
@@ -354,13 +349,6 @@ func (rf *Raft) adoptHigherTermLocked(term Term) {
 
 func (rf *Raft) resetElectionTimerLocked() {
 	d := rf.electionTimeout()
-	// HeartbeatInterval was only validated against electionMin, and a leader
-	// stays up only while its heartbeats beat every follower's timeout (§5.2).
-	// The randomized default stays in range by construction; only the test
-	// hook can break this.
-	if d < rf.electionMin || d >= rf.electionMax {
-		rf.fatalf("election timeout %v outside [%v, %v)", d, rf.electionMin, rf.electionMax)
-	}
 	rf.electionDeadline = rf.clock.Now().Add(d)
 	rf.electionTimer.Reset(d)
 }
