@@ -7,8 +7,31 @@ import (
 	"slices"
 )
 
-// ErrNotLeader is returned by Start on a node that is not the leader.
+// ErrNotLeader is returned, as a *NotLeaderError, by Start and ReadIndex on
+// a node that is not the leader.
 var ErrNotLeader = errors.New("raft: not the leader")
+
+// NotLeaderError is the error Start and ReadIndex return on a node that is
+// not the leader; errors.Is(err, ErrNotLeader) reports true for it.
+type NotLeaderError struct {
+	// Leader is the leader this node knows of in its current term, or "" if
+	// it knows none. It is only a hint: that node may have lost its term
+	// since.
+	Leader NodeID
+}
+
+func (e *NotLeaderError) Error() string {
+	if e.Leader == "" {
+		return ErrNotLeader.Error() + ", leader unknown"
+	}
+	return fmt.Sprintf("%v, leader is %s", ErrNotLeader, e.Leader)
+}
+
+func (e *NotLeaderError) Unwrap() error { return ErrNotLeader }
+
+func (rf *Raft) notLeaderErrLocked() error {
+	return &NotLeaderError{Leader: rf.leaderLocked()}
+}
 
 // Start appends cmd to the leader's log and returns the index and term it
 // will be committed at, if it is committed at all: a leader can lose its
@@ -20,7 +43,7 @@ func (rf *Raft) Start(cmd []byte) (Index, Term, error) {
 	defer rf.mu.Unlock()
 
 	if !rf.isLeaderLocked() {
-		return 0, rf.currentTerm, ErrNotLeader
+		return 0, rf.currentTerm, rf.notLeaderErrLocked()
 	}
 	index := rf.lastLogIndexLocked() + 1
 	entry := LogEntry{Term: rf.currentTerm, Kind: EntryCommand, Command: cmd}

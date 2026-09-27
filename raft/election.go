@@ -45,6 +45,7 @@ func (rf *Raft) startElectionLocked(ctx context.Context) {
 	}
 	rf.logger.Info("became candidate", "term", rf.currentTerm, "oldRole", rf.role)
 	rf.role = Candidate
+	rf.leaderID = ""
 	rf.votes = map[NodeID]struct{}{rf.id: {}}
 	rf.cancelRPCsLocked()
 

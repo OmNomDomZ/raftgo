@@ -110,6 +110,7 @@ func (rf *Raft) HandleAppendEntries(args *AppendEntriesArgs) (*AppendEntriesRepl
 			rf.cancelRPCsLocked()
 		}
 	}
+	rf.leaderID = args.LeaderID
 	// The leader is legitimate whether or not we can persist, so there is no
 	// reason to start an election against it.
 	rf.resetElectionTimerLocked()

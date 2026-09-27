@@ -236,3 +236,44 @@ func TestHandleAppendEntries_SecondLeaderInTermGetsNoReply(t *testing.T) {
 		t.Fatalf("expected to stay leader of term 3, got %v in term %d", role, term)
 	}
 }
+
+func TestLeaderHint_FollowsAppendEntriesAndTerms(t *testing.T) {
+	rf, _ := newTestNode(t, "A", "B", "C")
+	if got := rf.Leader(); got != "" {
+		t.Fatalf("fresh node knows leader %q, want none", got)
+	}
+
+	mustHandleAppendEntries(t, rf, &AppendEntriesArgs{Term: 2, LeaderID: "B"})
+	if got := rf.Leader(); got != "B" {
+		t.Fatalf("after B's AppendEntries in term 2: leader %q, want B", got)
+	}
+	var nle *NotLeaderError
+	if _, _, err := rf.Start([]byte("x")); !errors.As(err, &nle) || nle.Leader != "B" {
+		t.Fatalf("Start on a follower: %v, want a NotLeaderError naming B", err)
+	}
+
+	// A deposed leader of an earlier term is not followed.
+	if reply := mustHandleAppendEntries(t, rf, &AppendEntriesArgs{Term: 1, LeaderID: "C"}); reply.Success {
+		t.Fatalf("stale AppendEntries accepted: %+v", reply)
+	}
+	if got := rf.Leader(); got != "B" {
+		t.Fatalf("after a stale AppendEntries from C: leader %q, want B", got)
+	}
+
+	// B led term 2 only; nobody is known to lead term 3 yet.
+	mustHandleRequestVote(t, rf, &RequestVoteArgs{Term: 3, CandidateID: "C"})
+	if got := rf.Leader(); got != "" {
+		t.Fatalf("after moving to term 3: leader %q, want none", got)
+	}
+}
+
+func TestLeaderHint_CandidateLearnsTheWinner(t *testing.T) {
+	rf, _ := newTestNode(t, "A", "B", "C")
+	setRoleAndTerm(rf, Candidate, 2, "A")
+
+	mustHandleAppendEntries(t, rf, &AppendEntriesArgs{Term: 2, LeaderID: "B"})
+
+	if got := rf.Leader(); got != "B" {
+		t.Fatalf("candidate that lost to B: leader %q, want B", got)
+	}
+}

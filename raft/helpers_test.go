@@ -63,7 +63,9 @@ func setRoleAndTerm(rf *Raft, role Role, term Term, votedFor NodeID) {
 	rf.role = role
 	rf.currentTerm = term
 	rf.votedFor = votedFor
+	rf.leaderID = ""
 	if role == Leader {
+		rf.leaderID = rf.id
 		rf.initLeaderStateLocked()
 	}
 }

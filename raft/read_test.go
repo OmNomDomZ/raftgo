@@ -89,8 +89,10 @@ func TestReadIndex_AnswerToAnEarlierRequestDoesNotConfirm(t *testing.T) {
 
 func TestReadIndex_OnlyTheLeaderServesReads(t *testing.T) {
 	rf, _ := newTestNode(t, "A", "B", "C")
-	if _, err := rf.ReadIndex(context.Background()); !errors.Is(err, ErrNotLeader) {
-		t.Fatalf("follower: ReadIndex error %v, want ErrNotLeader", err)
+	mustHandleAppendEntries(t, rf, &AppendEntriesArgs{Term: 1, LeaderID: "B"})
+	var nle *NotLeaderError
+	if _, err := rf.ReadIndex(context.Background()); !errors.As(err, &nle) || nle.Leader != "B" {
+		t.Fatalf("follower: ReadIndex error %v, want a NotLeaderError naming B", err)
 	}
 }
 

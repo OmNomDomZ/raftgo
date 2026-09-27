@@ -252,6 +252,10 @@ type Raft struct {
 	role        Role
 	currentTerm Term
 	votedFor    NodeID
+	// leaderID is the leader of currentTerm, if this node knows it: itself
+	// while Leader, or whoever it last accepted an AppendEntries from. It is
+	// only a hint for clients, so it is volatile.
+	leaderID NodeID
 	// votes holds the peers that granted a vote in currentTerm, including
 	// this node; meaningful only while Candidate. A set rather than a counter,
 	// so a duplicated grant (e.g. from a transport retry) is counted once.
@@ -356,6 +360,21 @@ func (rf *Raft) GetState() (term Term, isLeader bool) {
 	return rf.currentTerm, rf.isLeaderLocked()
 }
 
+// Leader returns the leader this node knows of in its current term, or "" if
+// it knows none; see NotLeaderError. A stopped node knows none.
+func (rf *Raft) Leader() NodeID {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	return rf.leaderLocked()
+}
+
+func (rf *Raft) leaderLocked() NodeID {
+	if rf.stoppedLocked() {
+		return ""
+	}
+	return rf.leaderID
+}
+
 func (rf *Raft) isLeaderLocked() bool {
 	return rf.role == Leader && !rf.stoppedLocked()
 }
@@ -399,6 +418,7 @@ func (rf *Raft) becomeLeaderLocked() {
 	rf.logger.Info("became leader", "term", rf.currentTerm, "votes", len(rf.votes),
 		"lastLogIndex", rf.lastLogIndexLocked())
 	rf.role = Leader
+	rf.leaderID = rf.id
 	rf.initLeaderStateLocked()
 	if rf.onBecomeLeader != nil {
 		rf.onBecomeLeader(rf.currentTerm)
@@ -444,6 +464,7 @@ func (rf *Raft) adoptHigherTermLocked(term Term) {
 		"oldTerm", rf.currentTerm, "term", term, "oldRole", rf.role)
 	rf.currentTerm = term
 	rf.votedFor = ""
+	rf.leaderID = ""
 	rf.dirty = true
 	rf.cancelRPCsLocked()
 
@@ -472,10 +493,11 @@ func (rf *Raft) checkQuorumLocked() {
 // stepDownLocked turns a leader into a follower of its current term.
 func (rf *Raft) stepDownLocked() {
 	rf.role = Follower
+	rf.leaderID = ""
 	rf.heartbeatTimer.Stop()
 	rf.resetElectionTimerLocked()
 	rf.cancelRPCsLocked()
-	rf.failReadsLocked(ErrNotLeader)
+	rf.failReadsLocked(rf.notLeaderErrLocked())
 }
 
 func (rf *Raft) resetElectionTimerLocked() {

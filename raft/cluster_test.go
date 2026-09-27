@@ -602,6 +602,40 @@ func TestCluster_CutOffLeaderStepsDownAndRejoinsAsFollower(t *testing.T) {
 	})
 }
 
+func TestCluster_EveryNodeKnowsTheLeader(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c := newTestCluster(t, 3)
+		old := c.waitLeader(t)
+		c.advanceUntil(t, clusterElectionMin, func() bool { return c.allFollow(old, nil) })
+
+		// Cut off, old steps down and no longer knows a leader, while the
+		// majority follows the one it elects.
+		c.tr.setPartitioned(old.id, true)
+		var leader *Raft
+		c.advanceUntil(t, 5*time.Second, func() bool {
+			leader = c.leaderOtherThan(old)
+			return leader != nil && old.Leader() == "" && c.allFollow(leader, old)
+		})
+
+		c.tr.setPartitioned(old.id, false)
+		c.advanceUntil(t, 5*time.Second, func() bool {
+			leaders := c.leaders()
+			return len(leaders) == 1 && c.allFollow(leaders[0], nil)
+		})
+	})
+}
+
+// allFollow reports whether every live node other than except names leader
+// as its leader.
+func (c *testCluster) allFollow(leader, except *Raft) bool {
+	for i, rf := range c.nodes {
+		if c.stops[i] != nil && rf != except && rf.Leader() != leader.id {
+			return false
+		}
+	}
+	return true
+}
+
 func TestCluster_HealthyLeaderPassesQuorumChecks(t *testing.T) {
 	// One peer down still leaves a quorum, so the leader must keep its term
 	// through many quorum checks.

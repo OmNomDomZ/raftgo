@@ -21,8 +21,8 @@ type pendingRead struct {
 // ReadIndex was called. Serving a read from that state is linearizable
 // without appending the read to the log (§6.4 of Ongaro's thesis).
 //
-// It returns ErrNotLeader if this node is not the leader or stops being it
-// before the index is confirmed, and ctx.Err() if ctx is done first.
+// It returns a *NotLeaderError if this node is not the leader or stops being
+// it before the index is confirmed, and ctx.Err() if ctx is done first.
 func (rf *Raft) ReadIndex(ctx context.Context) (Index, error) {
 	rf.mu.Lock()
 	if err := rf.runningLocked(); err != nil {
@@ -31,7 +31,7 @@ func (rf *Raft) ReadIndex(ctx context.Context) (Index, error) {
 	}
 	if rf.role != Leader {
 		rf.mu.Unlock()
-		return 0, ErrNotLeader
+		return 0, rf.notLeaderErrLocked()
 	}
 	// Answers to AppendEntries sent from now on show that a quorum still
 	// knows no later term, so this node was still the leader after the call
