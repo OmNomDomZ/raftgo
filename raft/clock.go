@@ -2,8 +2,10 @@ package raft
 
 import "time"
 
-// Clock creates timers; tests substitute a fake one to control time.
+// Clock tells time and creates timers; tests substitute a fake one to control
+// time.
 type Clock interface {
+	Now() time.Time
 	NewTimer(d time.Duration) Timer
 }
 
@@ -18,6 +20,8 @@ type Timer interface {
 
 // SystemClock is a Clock backed by the time package.
 type SystemClock struct{}
+
+func (SystemClock) Now() time.Time { return time.Now() }
 
 func (SystemClock) NewTimer(d time.Duration) Timer {
 	return systemTimer{time.NewTimer(d)}

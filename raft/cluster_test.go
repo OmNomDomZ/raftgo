@@ -3,7 +3,9 @@ package raft
 import (
 	"context"
 	"fmt"
+	"math/rand/v2"
 	"slices"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -19,11 +21,17 @@ type testCluster struct {
 	done     []chan struct{}
 	clock    *fakeClock
 	tr       *fakeTransport
+	// elections checks Election Safety on every leader change of every node.
+	elections *electionLog
 }
 
 // Cluster tests run inside a synctest bubble: synctest.Wait tells when every
 // node goroutine has finished reacting to a tick, so the tests never sleep and
 // time exists only as fakeClock's virtual time.
+
+// clusterElectionMin is a lower bound of every election timeout used in
+// cluster tests.
+const clusterElectionMin = 100 * time.Millisecond
 
 // newTestCluster starts n fully-connected nodes. Node i gets a fixed election
 // timeout of 100ms+10ms*i, so n0 always times out first.
@@ -50,6 +58,10 @@ func newTestClusterWithTimeouts(t *testing.T, timeouts []func() time.Duration) *
 		done:     make([]chan struct{}, n),
 		clock:    newFakeClock(time.Unix(0, 0)),
 		tr:       newFakeTransport(),
+		elections: &electionLog{
+			t:       t,
+			leaders: map[Term]NodeID{},
+		},
 	}
 	for i := range n {
 		c.ids[i] = NodeID(fmt.Sprintf("n%d", i))
@@ -77,16 +89,20 @@ func (c *testCluster) start(i int) {
 		}
 	}
 	rf, err := New(Config{
-		ID:              c.ids[i],
-		Peers:           peers,
-		Transport:       c.tr,
-		Storage:         c.storages[i],
-		Clock:           c.clock,
-		ElectionTimeout: c.timeouts[i],
+		ID:                 c.ids[i],
+		Peers:              peers,
+		Transport:          c.tr,
+		Storage:            c.storages[i],
+		Clock:              c.clock,
+		ElectionTimeout:    c.timeouts[i],
+		ElectionTimeoutMin: clusterElectionMin,
+		OnFatal:            panicOnFatal,
 	})
 	if err != nil {
 		c.t.Fatalf("New(%s): %v", c.ids[i], err)
 	}
+	id := c.ids[i]
+	rf.onBecomeLeader = func(term Term) { c.elections.record(id, term) }
 	c.tr.register(c.ids[i], rf)
 	c.tr.setPartitioned(c.ids[i], false)
 
@@ -340,35 +356,24 @@ func TestCluster_RestartedLeaderRejoinsAsFollower(t *testing.T) {
 	})
 }
 
-func votedFor(rf *Raft) NodeID {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	return rf.votedFor
+// electionLog records every node's elections to check Election Safety
+// (§5.2): at most one leader per term over the whole run, including leaders
+// that are deposed before a test gets to observe them.
+type electionLog struct {
+	t       *testing.T
+	mu      sync.Mutex
+	leaders map[Term]NodeID
 }
 
-// electionLog records the leader seen in each term to check Election Safety
-// (§5.2) across the whole run, not only at its end.
-type electionLog map[Term]NodeID
-
-func (l electionLog) record(t *testing.T, c *testCluster) {
-	t.Helper()
-	for _, rf := range c.leaders() {
-		term, _ := rf.GetState()
-		if prev, ok := l[term]; ok && prev != rf.id {
-			t.Fatalf("Election Safety violated: %s and %s are both leaders in term %d", prev, rf.id, term)
-		}
-		l[term] = rf.id
+// record is called from the nodes' goroutines, so it reports a violation
+// with Errorf rather than Fatalf.
+func (l *electionLog) record(id NodeID, term Term) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if prev, ok := l.leaders[term]; ok && prev != id {
+		l.t.Errorf("Election Safety violated: %s and %s are both leaders in term %d", prev, id, term)
 	}
-}
-
-// advanceChecked runs the cluster for d of virtual time, recording leaders
-// after every tick.
-func (c *testCluster) advanceChecked(t *testing.T, d time.Duration, l electionLog) {
-	t.Helper()
-	for range d / tick {
-		c.step()
-		l.record(t, c)
-	}
+	l.leaders[term] = id
 }
 
 // splitFirstElection brings a 5-node cluster to a split vote in term 1: n4 is
@@ -378,14 +383,13 @@ func (c *testCluster) advanceChecked(t *testing.T, d time.Duration, l electionLo
 //
 // With newTestCluster timeouts the next deadlines are n0 at 200ms, n1 and n2
 // at 220ms, n3 at 240ms.
-func splitFirstElection(t *testing.T, c *testCluster, l electionLog) {
+func splitFirstElection(t *testing.T, c *testCluster) {
 	t.Helper()
 	c.crash(4)
 
 	c.tr.setPartitioned("n1", true)
 	c.tr.setPartitioned("n3", true)
 	c.advanceUntil(t, time.Second, func() bool {
-		l.record(t, c)
 		role, _ := roleAndTerm(c.nodes[0])
 		return role == Candidate
 	})
@@ -395,7 +399,6 @@ func splitFirstElection(t *testing.T, c *testCluster, l electionLog) {
 	c.tr.setPartitioned("n1", false)
 	c.tr.setPartitioned("n3", false)
 	c.advanceUntil(t, time.Second, func() bool {
-		l.record(t, c)
 		role, _ := roleAndTerm(c.nodes[1])
 		return role == Candidate
 	})
@@ -422,13 +425,11 @@ func splitFirstElection(t *testing.T, c *testCluster, l electionLog) {
 func TestCluster_SplitVoteThenCrashedNodeRecovers(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		c := newTestCluster(t, 5)
-		l := electionLog{}
-		splitFirstElection(t, c, l)
+		splitFirstElection(t, c)
 
 		c.start(4)
 
 		c.advanceUntil(t, 5*time.Second, func() bool {
-			l.record(t, c)
 			return len(c.leaders()) == 1
 		})
 		leader := c.leaders()[0]
@@ -437,7 +438,7 @@ func TestCluster_SplitVoteThenCrashedNodeRecovers(t *testing.T) {
 			t.Fatalf("split term 1 must not produce a leader, got leader %s in term %d", leader.id, leaderTerm)
 		}
 
-		c.advanceChecked(t, 500*time.Millisecond, l)
+		c.advance(500 * time.Millisecond)
 
 		if term, isLeader := leader.GetState(); !isLeader || term != leaderTerm {
 			t.Fatalf("leader %s was deposed: term %d -> %d, isLeader=%v", leader.id, leaderTerm, term, isLeader)
@@ -456,15 +457,13 @@ func TestCluster_SplitVoteThenCrashedNodeRecovers(t *testing.T) {
 func TestCluster_SplitVoteThenThreeToOneElectsLeader(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		c := newTestCluster(t, 5)
-		l := electionLog{}
-		splitFirstElection(t, c, l)
+		splitFirstElection(t, c)
 
 		// n4 stays down. Isolating n1 lets n0 (deadline 200ms) collect votes from
 		// n2 and n3 while n1 (deadline 220ms) runs for term 2 on its own vote:
 		// a 3/1 split among the 4 live nodes, where 3 is still a quorum of 5.
 		c.tr.setPartitioned("n1", true)
 		c.advanceUntil(t, time.Second, func() bool {
-			l.record(t, c)
 			role, term := roleAndTerm(c.nodes[1])
 			return role == Candidate && term == 2
 		})
@@ -485,7 +484,7 @@ func TestCluster_SplitVoteThenThreeToOneElectsLeader(t *testing.T) {
 		// The losing candidate must accept the winner's heartbeats instead of
 		// deposing it.
 		c.tr.setPartitioned("n1", false)
-		c.advanceChecked(t, 500*time.Millisecond, l)
+		c.advance(500 * time.Millisecond)
 
 		if term, isLeader := c.nodes[0].GetState(); !isLeader || term != 2 {
 			t.Fatalf("n0 was deposed: term %d isLeader=%v", term, isLeader)
@@ -496,4 +495,107 @@ func TestCluster_SplitVoteThenThreeToOneElectsLeader(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestCluster_HealedOldLeaderStepsDown(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c := newTestCluster(t, 3)
+		c.advanceUntil(t, 5*time.Second, func() bool { return len(c.leaders()) == 1 })
+		oldLeader := c.leaders()[0]
+
+		// Cut off, the old leader keeps believing it leads its stale term.
+		c.tr.setPartitioned(oldLeader.id, true)
+		c.advanceUntil(t, 5*time.Second, func() bool { return len(c.leaders()) == 2 })
+
+		c.tr.setPartitioned(oldLeader.id, false)
+		c.advanceUntil(t, 5*time.Second, func() bool { return len(c.leaders()) == 1 })
+
+		newLeader := c.leaders()[0]
+		if newLeader == oldLeader {
+			t.Fatalf("stale leader %s deposed the leader of a newer term", oldLeader.id)
+		}
+		leaderTerm, _ := newLeader.GetState()
+		if role, term := roleAndTerm(oldLeader); role != Follower || term != leaderTerm {
+			t.Fatalf("old leader: expected Follower in term %d, got %v in term %d", leaderTerm, role, term)
+		}
+	})
+}
+
+// TestCluster_RandomFaultsKeepElectionSafety runs a 5-node cluster through
+// random message loss, partitions and crash-restarts, checking Election
+// Safety on every election, then heals everything and expects a stable leader.
+func TestCluster_RandomFaultsKeepElectionSafety(t *testing.T) {
+	for seed := range uint64(20) {
+		t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				runRandomFaults(t, seed)
+			})
+		})
+	}
+}
+
+func runRandomFaults(t *testing.T, seed uint64) {
+	const n = 5
+	timeouts := make([]func() time.Duration, n)
+	for i := range timeouts {
+		// Each node's source is only called under that node's mu.
+		r := rand.New(rand.NewPCG(seed, uint64(i)))
+		timeouts[i] = func() time.Duration {
+			return defaultElectionMin + time.Duration(r.Int64N(int64(defaultElectionMax-defaultElectionMin)))
+		}
+	}
+	c := newTestClusterWithTimeouts(t, timeouts)
+
+	dropRNG := rand.New(rand.NewPCG(seed, 1000)) // called under the transport's mu
+	c.tr.setDrop(func() bool { return dropRNG.Float64() < 0.1 })
+
+	faults := rand.New(rand.NewPCG(seed, 2000))
+	partitioned := make([]bool, n)
+	for range 3 * time.Second / tick {
+		if faults.Float64() < 0.05 {
+			i := faults.IntN(n)
+			switch {
+			case c.stops[i] == nil:
+				c.start(i)
+				partitioned[i] = false
+			case faults.Float64() < 0.3:
+				c.crash(i)
+			default:
+				partitioned[i] = !partitioned[i]
+				c.tr.setPartitioned(c.ids[i], partitioned[i])
+			}
+		}
+		c.step()
+	}
+
+	c.tr.setDrop(nil)
+	for i := range n {
+		if c.stops[i] == nil {
+			c.start(i)
+		}
+		c.tr.setPartitioned(c.ids[i], false)
+	}
+	// A follower that missed heartbeats before the heal may still time out
+	// and legitimately depose the first leader. A leader that has held on for
+	// a full election timeout has reset every follower's timer.
+	var leader *Raft
+	var leaderTerm Term
+	c.advanceUntil(t, 5*time.Second, func() bool {
+		leaders := c.leaders()
+		if len(leaders) != 1 {
+			return false
+		}
+		term, _ := leaders[0].GetState()
+		if leaders[0] != leader || term != leaderTerm {
+			leader, leaderTerm = leaders[0], term
+			return false
+		}
+		c.advance(defaultElectionMax)
+		term, isLeader := leader.GetState()
+		return isLeader && term == leaderTerm
+	})
+	c.advance(time.Second)
+	if term, isLeader := leader.GetState(); !isLeader || term != leaderTerm {
+		t.Fatalf("leader %s of a healed cluster was deposed: term %d -> %d", leader.id, leaderTerm, term)
+	}
 }

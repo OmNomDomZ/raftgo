@@ -10,33 +10,38 @@ type Storage interface {
 	LoadState() (PersistentState, error)
 }
 
-// PersistentState is the state that must survive a restart (Figure 2).
+// PersistentState is the term and vote that must survive a restart
+// (Figure 2). The log is not part of it and will be persisted separately.
 type PersistentState struct {
 	CurrentTerm Term
 	VotedFor    NodeID // "" if no vote was cast in CurrentTerm
 }
 
-// persistLocked makes term and votedFor durable and only then adopts them in
-// memory, so a failed write leaves the node's commitments unchanged: a
-// restarted node must never vote twice in one term (§5.1).
-func (rf *Raft) persistLocked(term Term, votedFor NodeID) error {
-	err := rf.storage.SaveState(PersistentState{CurrentTerm: term, VotedFor: votedFor})
-	if err != nil {
-		rf.logger.Error("persist state failed", "term", term, "votedFor", votedFor, "err", err)
+func (rf *Raft) persistentStateLocked() PersistentState {
+	return PersistentState{CurrentTerm: rf.currentTerm, VotedFor: rf.votedFor}
+}
+
+// persistLocked makes st durable and only then adopts it in memory, so a
+// failed write leaves the node's commitments unchanged: a restarted node must
+// never vote twice in one term (§5.1).
+func (rf *Raft) persistLocked(st PersistentState) error {
+	if err := rf.storage.SaveState(st); err != nil {
+		rf.logger.Error("persist state failed",
+			"term", st.CurrentTerm, "votedFor", st.VotedFor, "err", err)
 		return err
 	}
-	rf.currentTerm = term
-	rf.votedFor = votedFor
+	rf.currentTerm = st.CurrentTerm
+	rf.votedFor = st.VotedFor
 	rf.dirty = false
 	return nil
 }
 
 // syncLocked persists in-memory state that stepping down left non-durable.
-// Callers must succeed here before sending a reply that commits the node to
-// its current term.
+// A reply that commits the node to its current term may only be sent once
+// this succeeds; otherwise the handler returns the error instead of a reply.
 func (rf *Raft) syncLocked() error {
 	if !rf.dirty {
 		return nil
 	}
-	return rf.persistLocked(rf.currentTerm, rf.votedFor)
+	return rf.persistLocked(rf.persistentStateLocked())
 }

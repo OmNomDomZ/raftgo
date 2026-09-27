@@ -26,6 +26,12 @@ func newFakeClock(start time.Time) *fakeClock {
 	return &fakeClock{now: start}
 }
 
+func (c *fakeClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
 func (c *fakeClock) NewTimer(d time.Duration) Timer {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -114,8 +120,15 @@ func seqTimeout(ds ...time.Duration) func() time.Duration {
 type fakeStorage struct {
 	mu       sync.Mutex
 	state    PersistentState
+	saves    int // successful SaveState calls
 	failSave bool
 	failLoad bool
+}
+
+func (s *fakeStorage) saveCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saves
 }
 
 func (s *fakeStorage) setFailSave(fail bool) {
@@ -131,6 +144,7 @@ func (s *fakeStorage) SaveState(st PersistentState) error {
 		return errors.New("fake storage: save failed")
 	}
 	s.state = st
+	s.saves++
 	return nil
 }
 
@@ -144,16 +158,20 @@ func (s *fakeStorage) LoadState() (PersistentState, error) {
 }
 
 // fakeTransport calls the target node's handlers synchronously in the
-// caller's goroutine. A partitioned node can neither send nor receive.
+// caller's goroutine. A partitioned node can neither send nor receive. If a
+// drop function is set, each request and each reply is lost when it returns
+// true; a lost reply means the target has already acted on the request.
 type fakeTransport struct {
 	mu          sync.Mutex
 	nodes       map[NodeID]RPCHandler
 	partitioned map[NodeID]bool
+	drop        func() bool
 }
 
 var (
 	errPartitioned = errors.New("fake transport: partitioned")
 	errUnknownNode = errors.New("fake transport: unknown node")
+	errDropped     = errors.New("fake transport: message dropped")
 )
 
 func newFakeTransport() *fakeTransport {
@@ -175,11 +193,26 @@ func (f *fakeTransport) setPartitioned(id NodeID, partitioned bool) {
 	f.partitioned[id] = partitioned
 }
 
+func (f *fakeTransport) setDrop(drop func() bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.drop = drop
+}
+
+func (f *fakeTransport) dropped() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.drop != nil && f.drop()
+}
+
 func (f *fakeTransport) route(from, to NodeID) (RPCHandler, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.partitioned[from] || f.partitioned[to] {
 		return nil, errPartitioned
+	}
+	if f.drop != nil && f.drop() {
+		return nil, errDropped
 	}
 	h, ok := f.nodes[to]
 	if !ok {
@@ -196,7 +229,14 @@ func (f *fakeTransport) RequestVote(ctx context.Context, target NodeID, args *Re
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return h.HandleRequestVote(args), nil
+	reply, err := h.HandleRequestVote(args)
+	if err != nil {
+		return nil, err
+	}
+	if f.dropped() {
+		return nil, errDropped
+	}
+	return reply, nil
 }
 
 func (f *fakeTransport) AppendEntries(ctx context.Context, target NodeID, args *AppendEntriesArgs) (*AppendEntriesReply, error) {
@@ -207,17 +247,67 @@ func (f *fakeTransport) AppendEntries(ctx context.Context, target NodeID, args *
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return h.HandleAppendEntries(args), nil
+	reply, err := h.HandleAppendEntries(args)
+	if err != nil {
+		return nil, err
+	}
+	if f.dropped() {
+		return nil, errDropped
+	}
+	return reply, nil
 }
 
 // stubPeer answers every RPC with a fixed term and no vote/success, standing
 // in for a peer that has moved to a higher term.
 type stubPeer struct{ term Term }
 
-func (p stubPeer) HandleRequestVote(*RequestVoteArgs) *RequestVoteReply {
-	return &RequestVoteReply{Term: p.term}
+func (p stubPeer) HandleRequestVote(*RequestVoteArgs) (*RequestVoteReply, error) {
+	return &RequestVoteReply{Term: p.term}, nil
 }
 
-func (p stubPeer) HandleAppendEntries(*AppendEntriesArgs) *AppendEntriesReply {
-	return &AppendEntriesReply{Term: p.term}
+func (p stubPeer) HandleAppendEntries(*AppendEntriesArgs) (*AppendEntriesReply, error) {
+	return &AppendEntriesReply{Term: p.term}, nil
+}
+
+// grantingPeer grants every vote in the requested term.
+type grantingPeer struct{}
+
+func (grantingPeer) HandleRequestVote(args *RequestVoteArgs) (*RequestVoteReply, error) {
+	return &RequestVoteReply{Term: args.Term, VoteGranted: true}, nil
+}
+
+func (grantingPeer) HandleAppendEntries(args *AppendEntriesArgs) (*AppendEntriesReply, error) {
+	return &AppendEntriesReply{Term: args.Term, Success: true}, nil
+}
+
+// blockingTransport holds every RPC until its context is done, then reports
+// the RPC's term on released.
+type blockingTransport struct{ released chan Term }
+
+func newBlockingTransport() blockingTransport {
+	return blockingTransport{released: make(chan Term, 16)}
+}
+
+func (b blockingTransport) RequestVote(ctx context.Context, _ NodeID, args *RequestVoteArgs) (*RequestVoteReply, error) {
+	<-ctx.Done()
+	b.released <- args.Term
+	return nil, ctx.Err()
+}
+
+func (b blockingTransport) AppendEntries(ctx context.Context, _ NodeID, args *AppendEntriesArgs) (*AppendEntriesReply, error) {
+	<-ctx.Done()
+	b.released <- args.Term
+	return nil, ctx.Err()
+}
+
+// nilTransport violates the Transport contract by returning neither a reply
+// nor an error.
+type nilTransport struct{}
+
+func (nilTransport) RequestVote(context.Context, NodeID, *RequestVoteArgs) (*RequestVoteReply, error) {
+	return nil, nil
+}
+
+func (nilTransport) AppendEntries(context.Context, NodeID, *AppendEntriesArgs) (*AppendEntriesReply, error) {
+	return nil, nil
 }

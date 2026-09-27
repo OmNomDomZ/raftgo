@@ -6,22 +6,56 @@ func (rf *Raft) onHeartbeatTimeout(ctx context.Context) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	// A tick that raced with stepping down.
-	if rf.role != Leader {
+	// A tick that raced with stepping down. A stale tick while still Leader
+	// only sends one extra heartbeat, which is harmless.
+	if rf.stoppedLocked() || rf.role != Leader {
 		return
 	}
 	rf.heartbeatTimer.Reset(rf.heartbeatInterval)
 
-	args := &AppendEntriesArgs{Term: rf.currentTerm, LeaderID: rf.id}
-	for _, peer := range rf.peers {
-		rf.wg.Go(func() { rf.sendHeartbeat(ctx, peer, args) })
+	for _, p := range rf.peers {
+		select {
+		case p.wake <- struct{}{}:
+		default: // a wake-up is already pending
+		}
+	}
+}
+
+// replicate runs for the node's lifetime and sends p a heartbeat on every
+// wake-up while this node is Leader. Keeping at most one AppendEntries in
+// flight per peer means a slow peer coalesces wake-ups instead of piling up
+// goroutines and receiving RPCs out of order.
+func (rf *Raft) replicate(ctx context.Context, p peer) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-p.wake:
+		}
+
+		rf.mu.Lock()
+		// A wake-up can outlive the leadership it was sent for.
+		if rf.stoppedLocked() || rf.role != Leader {
+			rf.mu.Unlock()
+			continue
+		}
+		rpcCtx := rf.rpcContextLocked(ctx)
+		args := &AppendEntriesArgs{Term: rf.currentTerm, LeaderID: rf.id}
+		rf.mu.Unlock()
+
+		rf.sendHeartbeat(rpcCtx, p.id, args)
 	}
 }
 
 func (rf *Raft) sendHeartbeat(ctx context.Context, peer NodeID, args *AppendEntriesArgs) {
-	ctx, cancel := context.WithTimeout(ctx, rf.rpcTimeout)
+	// A heartbeat is stale once the next one is due. Waiting longer on a lost
+	// one would hold back the next and let the peer's election timer fire.
+	ctx, cancel := context.WithTimeout(ctx, rf.heartbeatInterval)
 	defer cancel()
 	reply, err := rf.transport.AppendEntries(ctx, peer, args)
+	if err == nil && reply == nil {
+		err = errNilReply
+	}
 	if err != nil {
 		rf.logger.Debug("AppendEntries failed", "peer", peer, "term", args.Term, "err", err)
 		return
@@ -29,7 +63,7 @@ func (rf *Raft) sendHeartbeat(ctx context.Context, peer NodeID, args *AppendEntr
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	if reply.Term > rf.currentTerm {
-		rf.becomeFollowerLocked(reply.Term)
+	if !rf.stoppedLocked() && reply.Term > rf.currentTerm {
+		rf.adoptHigherTermLocked(reply.Term)
 	}
 }

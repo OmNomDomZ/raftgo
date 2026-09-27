@@ -1,35 +1,15 @@
 package raft
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
 
-func testConfig(st Storage, id NodeID, peers ...NodeID) Config {
-	return Config{
-		ID:              id,
-		Peers:           peers,
-		Transport:       newFakeTransport(),
-		Storage:         st,
-		Clock:           newFakeClock(time.Unix(0, 0)),
-		ElectionTimeout: fixedTimeout(time.Second),
-	}
-}
-
-func newTestNode(t *testing.T, id NodeID, peers ...NodeID) (*Raft, *fakeStorage) {
-	t.Helper()
-	st := &fakeStorage{}
-	rf, err := New(testConfig(st, id, peers...))
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	return rf, st
-}
-
 func TestHandleRequestVote_GrantsWhenNoVoteYet(t *testing.T) {
 	rf, st := newTestNode(t, "A", "B", "C")
 
-	reply := rf.HandleRequestVote(&RequestVoteArgs{Term: 1, CandidateID: "B"})
+	reply := mustHandleRequestVote(t, rf, &RequestVoteArgs{Term: 1, CandidateID: "B"})
 
 	if !reply.VoteGranted {
 		t.Fatalf("expected vote granted, got %+v", reply)
@@ -42,11 +22,43 @@ func TestHandleRequestVote_GrantsWhenNoVoteYet(t *testing.T) {
 	}
 }
 
+func TestHandleRequestVote_EmptyCandidateIsNotAVote(t *testing.T) {
+	// votedFor=="" means "no vote", so a grant to "" would not stop a second
+	// vote in the same term.
+	rf, st := newTestNode(t, "A", "B", "C")
+
+	for _, args := range []*RequestVoteArgs{nil, {Term: 1}} {
+		if reply, err := rf.HandleRequestVote(args); !errors.Is(err, ErrInvalidArgs) || reply != nil {
+			t.Fatalf("HandleRequestVote(%+v) = %+v, %v; want no reply and ErrInvalidArgs", args, reply, err)
+		}
+	}
+	if role, term := roleAndTerm(rf); role != Follower || term != 0 || votedFor(rf) != "" || st.saveCount() != 0 {
+		t.Fatalf("invalid request changed state: %v in term %d, votedFor %q, %d saves",
+			role, term, votedFor(rf), st.saveCount())
+	}
+	if reply := mustHandleRequestVote(t, rf, &RequestVoteArgs{Term: 1, CandidateID: "B"}); !reply.VoteGranted {
+		t.Fatalf("expected the first real candidate to get the vote, got %+v", reply)
+	}
+}
+
+func TestHandleAppendEntries_EmptyLeaderIsRejected(t *testing.T) {
+	rf, _ := newTestNode(t, "A", "B")
+
+	for _, args := range []*AppendEntriesArgs{nil, {Term: 1}} {
+		if reply, err := rf.HandleAppendEntries(args); !errors.Is(err, ErrInvalidArgs) || reply != nil {
+			t.Fatalf("HandleAppendEntries(%+v) = %+v, %v; want no reply and ErrInvalidArgs", args, reply, err)
+		}
+	}
+	if _, term := roleAndTerm(rf); term != 0 {
+		t.Fatalf("invalid request changed the term to %d", term)
+	}
+}
+
 func TestHandleRequestVote_RejectsStaleTerm(t *testing.T) {
 	rf, _ := newTestNode(t, "A", "B")
-	rf.HandleRequestVote(&RequestVoteArgs{Term: 5, CandidateID: "B"})
+	mustHandleRequestVote(t, rf, &RequestVoteArgs{Term: 5, CandidateID: "B"})
 
-	reply := rf.HandleRequestVote(&RequestVoteArgs{Term: 3, CandidateID: "C"})
+	reply := mustHandleRequestVote(t, rf, &RequestVoteArgs{Term: 3, CandidateID: "C"})
 
 	if reply.VoteGranted {
 		t.Fatalf("expected vote rejected for stale term, got %+v", reply)
@@ -58,12 +70,12 @@ func TestHandleRequestVote_RejectsStaleTerm(t *testing.T) {
 
 func TestHandleRequestVote_RejectsSecondVoteInSameTerm(t *testing.T) {
 	rf, _ := newTestNode(t, "A", "B", "C")
-	first := rf.HandleRequestVote(&RequestVoteArgs{Term: 1, CandidateID: "B"})
+	first := mustHandleRequestVote(t, rf, &RequestVoteArgs{Term: 1, CandidateID: "B"})
 	if !first.VoteGranted {
 		t.Fatalf("setup: expected first vote granted")
 	}
 
-	second := rf.HandleRequestVote(&RequestVoteArgs{Term: 1, CandidateID: "C"})
+	second := mustHandleRequestVote(t, rf, &RequestVoteArgs{Term: 1, CandidateID: "C"})
 
 	if second.VoteGranted {
 		t.Fatalf("expected second vote in same term rejected, got %+v", second)
@@ -73,9 +85,9 @@ func TestHandleRequestVote_RejectsSecondVoteInSameTerm(t *testing.T) {
 func TestHandleRequestVote_GrantsSameCandidateAgain(t *testing.T) {
 	// A retried RequestVote must not be rejected (Figure 2: votedFor == candidateId).
 	rf, _ := newTestNode(t, "A", "B")
-	rf.HandleRequestVote(&RequestVoteArgs{Term: 1, CandidateID: "B"})
+	mustHandleRequestVote(t, rf, &RequestVoteArgs{Term: 1, CandidateID: "B"})
 
-	reply := rf.HandleRequestVote(&RequestVoteArgs{Term: 1, CandidateID: "B"})
+	reply := mustHandleRequestVote(t, rf, &RequestVoteArgs{Term: 1, CandidateID: "B"})
 
 	if !reply.VoteGranted {
 		t.Fatalf("expected repeat vote for same candidate granted, got %+v", reply)
@@ -84,13 +96,9 @@ func TestHandleRequestVote_GrantsSameCandidateAgain(t *testing.T) {
 
 func TestHandleRequestVote_HigherTermStepsDownAndGrants(t *testing.T) {
 	rf, _ := newTestNode(t, "A", "B", "C")
-	rf.mu.Lock()
-	rf.role = Leader
-	rf.currentTerm = 3
-	rf.votedFor = "A"
-	rf.mu.Unlock()
+	setRoleAndTerm(rf, Leader, 3, "A")
 
-	reply := rf.HandleRequestVote(&RequestVoteArgs{Term: 4, CandidateID: "B"})
+	reply := mustHandleRequestVote(t, rf, &RequestVoteArgs{Term: 4, CandidateID: "B"})
 
 	if !reply.VoteGranted {
 		t.Fatalf("expected vote granted after stepping down, got %+v", reply)
@@ -104,24 +112,27 @@ func TestHandleRequestVote_HigherTermStepsDownAndGrants(t *testing.T) {
 	}
 }
 
-func TestHandleRequestVote_PersistFailureDeclinesVote(t *testing.T) {
+func TestHandleRequestVote_PersistFailureSendsNoReply(t *testing.T) {
+	// A vote that is not durable must not be granted, and a refusal would be
+	// a lie too, so the node answers nothing.
 	rf, st := newTestNode(t, "A", "B")
 	st.setFailSave(true)
 
-	reply := rf.HandleRequestVote(&RequestVoteArgs{Term: 1, CandidateID: "B"})
+	reply, err := rf.HandleRequestVote(&RequestVoteArgs{Term: 1, CandidateID: "B"})
 
-	if reply.VoteGranted {
-		t.Fatalf("expected vote declined when persistence fails, got %+v", reply)
+	if err == nil || reply != nil {
+		t.Fatalf("expected an error and no reply when persistence fails, got reply=%+v err=%v", reply, err)
+	}
+	if got := votedFor(rf); got != "" {
+		t.Fatalf("non-durable vote kept in memory: votedFor=%q", got)
 	}
 }
 
 func TestHandleAppendEntries_RejectsStaleTerm(t *testing.T) {
 	rf, _ := newTestNode(t, "A", "B")
-	rf.mu.Lock()
-	rf.currentTerm = 5
-	rf.mu.Unlock()
+	setRoleAndTerm(rf, Follower, 5, "")
 
-	reply := rf.HandleAppendEntries(&AppendEntriesArgs{Term: 3, LeaderID: "B"})
+	reply := mustHandleAppendEntries(t, rf, &AppendEntriesArgs{Term: 3, LeaderID: "B"})
 
 	if reply.Success {
 		t.Fatalf("expected heartbeat from stale term rejected, got %+v", reply)
@@ -133,37 +144,23 @@ func TestHandleAppendEntries_RejectsStaleTerm(t *testing.T) {
 
 func TestHandleAppendEntries_AcceptsAndStepsDownFromCandidate(t *testing.T) {
 	rf, _ := newTestNode(t, "A", "B")
-	rf.mu.Lock()
-	rf.currentTerm = 2
-	rf.role = Candidate
-	rf.votedFor = "A"
-	rf.mu.Unlock()
+	setRoleAndTerm(rf, Candidate, 2, "A")
 
-	reply := rf.HandleAppendEntries(&AppendEntriesArgs{Term: 2, LeaderID: "B"})
+	reply := mustHandleAppendEntries(t, rf, &AppendEntriesArgs{Term: 2, LeaderID: "B"})
 
 	if !reply.Success {
 		t.Fatalf("expected same-term heartbeat accepted, got %+v", reply)
 	}
-	_, isLeader := rf.GetState()
-	if isLeader {
-		t.Fatalf("node should not be leader")
-	}
-	rf.mu.Lock()
-	role := rf.role
-	rf.mu.Unlock()
-	if role != Follower {
+	if role, _ := roleAndTerm(rf); role != Follower {
 		t.Fatalf("expected candidate to step down to Follower, got %v", role)
 	}
 }
 
 func TestHandleAppendEntries_HigherTermStepsDownLeader(t *testing.T) {
 	rf, _ := newTestNode(t, "A", "B")
-	rf.mu.Lock()
-	rf.role = Leader
-	rf.currentTerm = 1
-	rf.mu.Unlock()
+	setRoleAndTerm(rf, Leader, 1, "A")
 
-	reply := rf.HandleAppendEntries(&AppendEntriesArgs{Term: 2, LeaderID: "B"})
+	reply := mustHandleAppendEntries(t, rf, &AppendEntriesArgs{Term: 2, LeaderID: "B"})
 
 	if !reply.Success {
 		t.Fatalf("expected heartbeat accepted, got %+v", reply)
@@ -174,27 +171,17 @@ func TestHandleAppendEntries_HigherTermStepsDownLeader(t *testing.T) {
 	}
 }
 
-func TestGetStateAndStart_ReflectRoleAndTerm(t *testing.T) {
+func TestGetState_ReflectsRoleAndTerm(t *testing.T) {
 	rf, _ := newTestNode(t, "A", "B")
 
-	term, isLeader := rf.GetState()
-	if term != 0 || isLeader {
+	if term, isLeader := rf.GetState(); term != 0 || isLeader {
 		t.Fatalf("fresh node should start at term 0, not leader; got term=%d isLeader=%v", term, isLeader)
 	}
 
-	_, _, isLeader = rf.Start([]byte("cmd"))
-	if isLeader {
-		t.Fatalf("non-leader Start must report isLeader=false")
-	}
+	setRoleAndTerm(rf, Leader, 7, "A")
 
-	rf.mu.Lock()
-	rf.role = Leader
-	rf.currentTerm = 7
-	rf.mu.Unlock()
-
-	index, term, isLeader := rf.Start([]byte("cmd"))
-	if !isLeader || term != 7 {
-		t.Fatalf("expected leader Start to report isLeader=true term=7, got index=%d term=%d isLeader=%v", index, term, isLeader)
+	if term, isLeader := rf.GetState(); term != 7 || !isLeader {
+		t.Fatalf("expected leader of term 7, got term=%d isLeader=%v", term, isLeader)
 	}
 }
 
@@ -205,8 +192,25 @@ func TestNew_RejectsInvalidConfig(t *testing.T) {
 	}{
 		{"missing ID", func(c *Config) { c.ID = "" }},
 		{"peers contain self", func(c *Config) { c.Peers = append(c.Peers, c.ID) }},
+		{"duplicate peers", func(c *Config) { c.Peers = []NodeID{"B", "C", "B"} }},
+		{"empty peer ID", func(c *Config) { c.Peers = append(c.Peers, "") }},
 		{"missing transport", func(c *Config) { c.Transport = nil }},
 		{"missing storage", func(c *Config) { c.Storage = nil }},
+		{"negative heartbeat interval", func(c *Config) { c.HeartbeatInterval = -time.Millisecond }},
+		{"negative RPC timeout", func(c *Config) { c.RPCTimeout = -time.Millisecond }},
+		{"heartbeat not below default election timeout", func(c *Config) {
+			c.ElectionTimeout, c.ElectionTimeoutMin = nil, 0
+			c.HeartbeatInterval = defaultElectionMin
+		}},
+		{"default heartbeat not below custom election timeout", func(c *Config) {
+			c.ElectionTimeout = fixedTimeout(defaultHeartbeatInterval)
+			c.ElectionTimeoutMin = defaultHeartbeatInterval
+		}},
+		{"heartbeat not below custom election timeout", func(c *Config) {
+			c.HeartbeatInterval = c.ElectionTimeoutMin
+		}},
+		{"custom election timeout without its minimum", func(c *Config) { c.ElectionTimeoutMin = 0 }},
+		{"election timeout minimum without custom election timeout", func(c *Config) { c.ElectionTimeout = nil }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -232,7 +236,7 @@ func TestNew_DoesNotAliasPeers(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	peers[0] = "X"
-	if rf.peers[0] != "B" {
+	if rf.peers[0].id != "B" {
 		t.Fatalf("caller's slice mutation leaked into the node: %v", rf.peers)
 	}
 }
@@ -240,7 +244,7 @@ func TestNew_DoesNotAliasPeers(t *testing.T) {
 func TestRestart_RestoresTermAndVote(t *testing.T) {
 	// A restarted node must not vote twice in one term (§5.1, Figure 2).
 	rf, st := newTestNode(t, "A", "B", "C")
-	if !rf.HandleRequestVote(&RequestVoteArgs{Term: 4, CandidateID: "B"}).VoteGranted {
+	if !mustHandleRequestVote(t, rf, &RequestVoteArgs{Term: 4, CandidateID: "B"}).VoteGranted {
 		t.Fatalf("setup: expected vote for B granted")
 	}
 
@@ -252,10 +256,49 @@ func TestRestart_RestoresTermAndVote(t *testing.T) {
 	if term, _ := restarted.GetState(); term != 4 {
 		t.Fatalf("expected restored term 4, got %d", term)
 	}
-	if reply := restarted.HandleRequestVote(&RequestVoteArgs{Term: 4, CandidateID: "C"}); reply.VoteGranted {
+	if reply := mustHandleRequestVote(t, restarted, &RequestVoteArgs{Term: 4, CandidateID: "C"}); reply.VoteGranted {
 		t.Fatalf("restarted node voted twice in term 4: %+v", reply)
 	}
-	if reply := restarted.HandleRequestVote(&RequestVoteArgs{Term: 4, CandidateID: "B"}); !reply.VoteGranted {
+	if reply := mustHandleRequestVote(t, restarted, &RequestVoteArgs{Term: 4, CandidateID: "B"}); !reply.VoteGranted {
 		t.Fatalf("restarted node must still grant a retried vote to B: %+v", reply)
+	}
+}
+
+func TestHandleRequestVote_RetryDoesNotRewriteStorage(t *testing.T) {
+	rf, st := newTestNode(t, "A", "B", "C")
+	mustHandleRequestVote(t, rf, &RequestVoteArgs{Term: 1, CandidateID: "B"})
+	saves := st.saveCount()
+
+	if !mustHandleRequestVote(t, rf, &RequestVoteArgs{Term: 1, CandidateID: "B"}).VoteGranted {
+		t.Fatalf("expected retried vote granted")
+	}
+	if got := st.saveCount(); got != saves {
+		t.Fatalf("retried vote for the same candidate wrote storage again: %d -> %d saves", saves, got)
+	}
+}
+
+func TestHandleAppendEntries_SecondLeaderInTermIsRejected(t *testing.T) {
+	// Election Safety is already broken if this happens, but a message from
+	// the network must not crash the node.
+	rf, _ := newTestNode(t, "A", "B", "C")
+	setRoleAndTerm(rf, Leader, 3, "A")
+
+	if reply := mustHandleAppendEntries(t, rf, &AppendEntriesArgs{Term: 3, LeaderID: "B"}); reply.Success || reply.Term != 3 {
+		t.Fatalf("expected Success=false with term 3, got %+v", reply)
+	}
+	if role, term := roleAndTerm(rf); role != Leader || term != 3 {
+		t.Fatalf("expected to stay leader of term 3, got %v in term %d", role, term)
+	}
+}
+
+func TestAdoptHigherTerm_NotHigherIsFatal(t *testing.T) {
+	rf, _ := newTestNode(t, "A", "B", "C")
+	setRoleAndTerm(rf, Follower, 3, "B")
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	mustBeFatal(t, func() { rf.adoptHigherTermLocked(3) })
+	if rf.votedFor != "B" {
+		t.Fatalf("vote in term 3 was cleared: votedFor=%q", rf.votedFor)
 	}
 }
