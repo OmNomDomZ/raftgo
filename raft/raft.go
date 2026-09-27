@@ -54,7 +54,7 @@ type Config struct {
 	Storage   Storage
 	Clock     Clock // default SystemClock
 
-	// ApplyCh receives every committed command, in log order; see ApplyMsg.
+	// ApplyCh receives every committed entry, in log order; see ApplyMsg.
 	// The node sends from its own goroutine without holding its lock, so
 	// the consumer may call Start or GetState while handling a message. The
 	// node never closes ApplyCh and stops sending once Run returns.

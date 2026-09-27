@@ -2,15 +2,19 @@ package raft
 
 import "context"
 
-// ApplyMsg delivers one committed command to the state machine.
+// ApplyMsg delivers one committed entry to the state machine.
 //
-// Indices on ApplyCh strictly increase but may have gaps: entries that carry
-// no command, such as a new leader's no-op, are committed but not sent. A
-// restarted node starts over from index 1, so the state machine must be
-// rebuilt from scratch, not resumed.
+// Every committed entry is sent, in log order and without gaps, including
+// those that carry no command, such as a new leader's no-op: the state
+// machine must be able to tell when it has applied through any index, e.g.
+// one returned by ReadIndex. A restarted node starts over from index 1, so
+// the state machine must be rebuilt from scratch, not resumed.
 type ApplyMsg struct {
-	Index   Index
-	Term    Term
+	Index Index
+	Term  Term
+	// Kind is EntryCommand for a client command; the state machine only
+	// records that it has applied any other kind.
+	Kind    EntryKind
 	Command []byte // shared: the receiver must not modify it
 }
 
@@ -22,7 +26,7 @@ func (rf *Raft) wakeApplierLocked() {
 	}
 }
 
-// apply runs for the node's lifetime and sends committed commands to
+// apply runs for the node's lifetime and sends committed entries to
 // ApplyCh. Sending outside mu keeps a slow consumer from stalling the
 // protocol, and lets the consumer call Start while handling a message.
 func (rf *Raft) apply(ctx context.Context) {
@@ -42,10 +46,7 @@ func (rf *Raft) apply(ctx context.Context) {
 		rf.mu.Unlock()
 
 		for i, e := range entries {
-			if e.Kind != EntryCommand {
-				continue
-			}
-			msg := ApplyMsg{Index: first + Index(i), Term: e.Term, Command: e.Command}
+			msg := ApplyMsg{Index: first + Index(i), Term: e.Term, Kind: e.Kind, Command: e.Command}
 			select {
 			case rf.applyCh <- msg:
 			case <-ctx.Done():

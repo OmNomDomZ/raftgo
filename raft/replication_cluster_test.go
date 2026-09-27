@@ -54,10 +54,15 @@ func (l *applyLog) record(i, gen int, msg ApplyMsg) {
 	if gen != l.gens[i] {
 		return
 	}
-	if msg.Index <= l.last[i] {
+	// Without gaps, so a state machine can tell when it has applied through
+	// any index, e.g. one returned by ReadIndex.
+	if msg.Index != l.last[i]+1 {
 		l.t.Errorf("node %d applied index %d after index %d", i, msg.Index, l.last[i])
 	}
 	l.last[i] = msg.Index
+	if msg.Kind != EntryCommand {
+		return
+	}
 	if prev, ok := l.committed[msg.Index]; ok && !bytes.Equal(prev, msg.Command) {
 		l.t.Errorf("State Machine Safety violated: index %d applied as %q and as %q", msg.Index, prev, msg.Command)
 	}
@@ -90,6 +95,14 @@ func (l *applyLog) count(index Index, cmd string) int {
 		}
 	}
 	return n
+}
+
+// lastApplied returns the last index node i has applied in its current
+// incarnation.
+func (l *applyLog) lastApplied(i int) Index {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.last[i]
 }
 
 // appliedCommands returns what node i has applied in its current

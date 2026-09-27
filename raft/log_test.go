@@ -593,7 +593,7 @@ func TestNew_LogLoadFailureIsReported(t *testing.T) {
 	}
 }
 
-func TestApply_SendsCommittedCommandsInOrderSkippingNoOps(t *testing.T) {
+func TestApply_SendsEveryCommittedEntryInOrder(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		applyCh := make(chan ApplyMsg)
 		cfg := testConfig(&fakeStorage{}, "A")
@@ -619,11 +619,17 @@ func TestApply_SendsCommittedCommandsInOrderSkippingNoOps(t *testing.T) {
 			}
 		}
 
-		// Index 1 is the no-op of the election.
-		for i, want := range []string{"a", "b"} {
+		// Index 1 is the no-op of the election. It is sent too, so the state
+		// machine learns that it has applied through index 1.
+		want := []ApplyMsg{
+			{Index: 1, Term: 1, Kind: EntryNoOp},
+			{Index: 2, Term: 1, Kind: EntryCommand, Command: []byte("a")},
+			{Index: 3, Term: 1, Kind: EntryCommand, Command: []byte("b")},
+		}
+		for _, w := range want {
 			msg := <-applyCh
-			if msg.Index != Index(i+2) || string(msg.Command) != want || msg.Term != 1 {
-				t.Fatalf("got %+v, want %q at index %d in term 1", msg, want, i+2)
+			if msg.Index != w.Index || msg.Term != w.Term || msg.Kind != w.Kind || !bytes.Equal(msg.Command, w.Command) {
+				t.Fatalf("got %+v, want %+v", msg, w)
 			}
 		}
 	})

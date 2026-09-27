@@ -3,6 +3,7 @@ package raft
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -192,6 +193,34 @@ func TestCluster_ReadIndexCoversCompletedWrites(t *testing.T) {
 		if index < written {
 			t.Fatalf("ReadIndex %d misses write at %d that completed before the read", index, written)
 		}
+	})
+}
+
+func TestCluster_ReadIndexOfNewLeaderIsReachedOnApplyCh(t *testing.T) {
+	// A new leader's read index is its no-op until the next write commits.
+	// A state machine waiting to apply through it only learns that it has
+	// from ApplyCh, so the no-op must be sent there too.
+	synctest.Test(t, func(t *testing.T) {
+		c := newTestCluster(t, 3)
+		old := c.waitLeader(t)
+		written := c.one(t, "a", 3)
+
+		c.tr.setPartitioned(old.id, true)
+		c.advanceUntil(t, 5*time.Second, func() bool {
+			l := c.leaderOtherThan(old)
+			return l != nil && commitIndex(l) > written
+		})
+		leader := c.leaderOtherThan(old)
+		index, err := c.readIndex(t, leader)
+		if err != nil {
+			t.Fatalf("ReadIndex on the new leader: %v", err)
+		}
+		if index <= written {
+			t.Fatalf("setup: ReadIndex %d does not cover the new leader's no-op after write %d", index, written)
+		}
+
+		i := slices.Index(c.nodes, leader)
+		c.advanceUntil(t, 5*time.Second, func() bool { return c.applied.lastApplied(i) >= index })
 	})
 }
 
