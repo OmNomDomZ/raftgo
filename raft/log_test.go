@@ -6,6 +6,7 @@ import (
 	"errors"
 	"slices"
 	"testing"
+	"testing/synctest"
 )
 
 // cmdEntry is a command entry whose command is its own name.
@@ -513,7 +514,7 @@ func TestAppendEntriesReply_InvalidConflictIsAFailedRPC(t *testing.T) {
 	}
 }
 
-// --- Restart ---
+// --- Restart and apply ---
 
 func TestNew_RestoresLog(t *testing.T) {
 	rf, st := newTestNode(t, "A", "B", "C")
@@ -552,4 +553,40 @@ func TestNew_LogLoadFailureIsReported(t *testing.T) {
 	if _, err := New(testConfig(&fakeStorage{failLoadLog: true}, "A", "B")); err == nil {
 		t.Fatalf("expected New to fail when the log cannot be loaded")
 	}
+}
+
+func TestApply_SendsCommittedCommandsInOrderSkippingNoOps(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		applyCh := make(chan ApplyMsg)
+		cfg := testConfig(&fakeStorage{}, "A")
+		cfg.ApplyCh = applyCh
+		rf, err := New(cfg)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		_, stop := runNode(rf)
+		defer stop()
+
+		// A single node wins its election, and commits alone.
+		for {
+			if _, isLeader := rf.GetState(); isLeader {
+				break
+			}
+			synctest.Wait()
+			rf.clock.(*fakeClock).Advance(rf.electionTimeout())
+		}
+		for _, cmd := range []string{"a", "b"} {
+			if _, _, err := rf.Start([]byte(cmd)); err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+		}
+
+		// Index 1 is the no-op of the election.
+		for i, want := range []string{"a", "b"} {
+			msg := <-applyCh
+			if msg.Index != Index(i+2) || string(msg.Command) != want || msg.Term != 1 {
+				t.Fatalf("got %+v, want %q at index %d in term 1", msg, want, i+2)
+			}
+		}
+	})
 }

@@ -24,6 +24,7 @@ func (rf *Raft) Run(ctx context.Context) {
 	for _, p := range rf.peers {
 		rf.wg.Go(func() { rf.replicate(ctx, p) })
 	}
+	rf.wg.Go(func() { rf.apply(ctx) })
 
 	for {
 		select {

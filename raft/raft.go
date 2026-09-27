@@ -44,8 +44,8 @@ const (
 	defaultMaxEntriesPerRPC  = 64
 )
 
-// Config configures a node. ID, Peers, Transport and Storage are required;
-// zero values of the other fields select defaults.
+// Config configures a node. ID, Peers, Transport, Storage and ApplyCh are
+// required; zero values of the other fields select defaults.
 type Config struct {
 	ID    NodeID
 	Peers []NodeID // other cluster members, excluding ID
@@ -53,6 +53,12 @@ type Config struct {
 	Transport Transport
 	Storage   Storage
 	Clock     Clock // default SystemClock
+
+	// ApplyCh receives every committed command, in log order; see ApplyMsg.
+	// The node sends from its own goroutine without holding its lock, so
+	// the consumer may call Start or GetState while handling a message. The
+	// node never closes ApplyCh and stops sending once Run returns.
+	ApplyCh chan<- ApplyMsg
 
 	// The election timeout is drawn uniformly from [ElectionTimeoutMin,
 	// ElectionTimeoutMax) on every reset, so split votes resolve (§5.2).
@@ -113,6 +119,9 @@ func (c *Config) validateAndSetDefaults() error {
 	}
 	if c.Storage == nil {
 		errs = append(errs, errors.New("storage is required"))
+	}
+	if c.ApplyCh == nil {
+		errs = append(errs, errors.New("apply channel is required"))
 	}
 	if c.MaxEntriesPerRPC < 0 {
 		errs = append(errs, fmt.Errorf("negative max entries per RPC %d", c.MaxEntriesPerRPC))
@@ -204,10 +213,13 @@ type Raft struct {
 	heartbeatInterval time.Duration
 	rpcTimeout        time.Duration
 	maxEntriesPerRPC  int
-	logger            *slog.Logger
-	onFatal           func(msg string)
-	electionTimer     Timer // stopped while Leader
-	heartbeatTimer    Timer // running only while Leader
+	applyCh           chan<- ApplyMsg
+	// applyWake wakes the applier; see apply.
+	applyWake      chan struct{}
+	logger         *slog.Logger
+	onFatal        func(msg string)
+	electionTimer  Timer // stopped while Leader
+	heartbeatTimer Timer // running only while Leader
 	// onBecomeLeader, if set, is called under mu whenever the node becomes
 	// Leader. Tests use it to check Election Safety and Leader Completeness
 	// over a node's whole history rather than at sampled moments.
@@ -285,6 +297,8 @@ func New(cfg Config) (*Raft, error) {
 		heartbeatInterval: cfg.HeartbeatInterval,
 		rpcTimeout:        cfg.RPCTimeout,
 		maxEntriesPerRPC:  cfg.MaxEntriesPerRPC,
+		applyCh:           cfg.ApplyCh,
+		applyWake:         make(chan struct{}, 1),
 		logger:            cfg.Logger.With("node", cfg.ID),
 		onFatal:           cfg.OnFatal,
 		electionTimer:     cfg.Clock.NewTimer(0),

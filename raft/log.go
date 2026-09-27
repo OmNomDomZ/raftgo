@@ -45,7 +45,8 @@ func (rf *Raft) termAtLocked(i Index) Term {
 
 // entriesLocked returns a copy of the entries in [lo, hi). It is a copy
 // because the log's backing array is overwritten when a suffix is replaced,
-// while the result may still be in flight in an RPC.
+// while the result may still be in flight in an RPC or on its way to
+// ApplyCh.
 func (rf *Raft) entriesLocked(lo, hi Index) []LogEntry {
 	if lo >= hi {
 		return nil

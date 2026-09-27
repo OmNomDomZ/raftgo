@@ -18,6 +18,7 @@ func testConfig(st Storage, id NodeID, peers ...NodeID) Config {
 		Peers:              peers,
 		Transport:          newFakeTransport(),
 		Storage:            st,
+		ApplyCh:            make(chan ApplyMsg, 64),
 		Clock:              newFakeClock(time.Unix(0, 0)),
 		ElectionTimeoutMin: time.Second,
 		ElectionTimeoutMax: 2 * time.Second,

@@ -109,11 +109,13 @@ func (c *testCluster) start(i int) {
 			peers = append(peers, other)
 		}
 	}
+	applyCh := make(chan ApplyMsg)
 	rf, err := New(Config{
 		ID:                 c.ids[i],
 		Peers:              peers,
 		Transport:          c.tr,
 		Storage:            c.storages[i],
+		ApplyCh:            applyCh,
 		Clock:              c.clock,
 		ElectionTimeoutMin: clusterElectionMin,
 		ElectionTimeoutMax: clusterElectionMax,
@@ -135,6 +137,15 @@ func (c *testCluster) start(i int) {
 	go func() {
 		defer close(done)
 		rf.Run(ctx)
+	}()
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-applyCh:
+			}
+		}
 	}()
 }
 

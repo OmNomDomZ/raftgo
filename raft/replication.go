@@ -12,8 +12,9 @@ var ErrNotLeader = errors.New("raft: not the leader")
 
 // Start appends cmd to the leader's log and returns the index and term it
 // will be committed at, if it is committed at all: a leader can lose its
-// term before replicating it. cmd is shared, not copied, so the caller must
-// not modify it afterwards.
+// term before replicating it. The caller watches ApplyCh for a message at
+// that index and term. cmd is shared, not copied, so the caller must not
+// modify it afterwards.
 func (rf *Raft) Start(cmd []byte) (Index, Term, error) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -180,6 +181,7 @@ func (rf *Raft) advanceCommitLocked() {
 		return
 	}
 	rf.commitIndex = n
+	rf.wakeApplierLocked()
 }
 
 // checkAppendEntriesReply rejects replies no correct peer sends; see

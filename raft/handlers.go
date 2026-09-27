@@ -169,6 +169,7 @@ func (rf *Raft) appendEntriesLocked(args *AppendEntriesArgs) (*AppendEntriesRepl
 	// leader's commit index only covers the last entry it sent (Figure 2).
 	if commit := min(args.LeaderCommit, args.PrevLogIndex+Index(len(args.Entries))); commit > rf.commitIndex {
 		rf.commitIndex = commit
+		rf.wakeApplierLocked()
 	}
 	return &AppendEntriesReply{Term: rf.currentTerm, Success: true}, nil
 }
