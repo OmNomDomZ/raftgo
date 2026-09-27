@@ -233,7 +233,7 @@ type Raft struct {
 	applyWake      chan struct{}
 	logger         *slog.Logger
 	onFatal        func(msg string)
-	electionTimer  Timer // stopped while Leader
+	electionTimer  Timer // paces quorum checks while Leader; see checkQuorumLocked
 	heartbeatTimer Timer // running only while Leader
 	// onBecomeLeader, if set, is called under mu whenever the node becomes
 	// Leader. Tests use it to check Election Safety and Leader Completeness
@@ -279,6 +279,9 @@ type Raft struct {
 	// (Figure 2), reset on every election win; see initLeaderStateLocked.
 	nextIndex  map[NodeID]Index
 	matchIndex map[NodeID]Index
+	// heardFrom holds the peers that have answered this leader since its
+	// last quorum check; see checkQuorumLocked.
+	heardFrom map[NodeID]struct{}
 	// mismatchLogged holds the peers already reported for rejecting a prefix
 	// they had matched, so a broken peer is logged once per term instead of
 	// on every heartbeat.
@@ -396,7 +399,8 @@ func (rf *Raft) becomeLeaderLocked() {
 	}
 	// Outstanding vote requests are no longer needed.
 	rf.cancelRPCsLocked()
-	rf.electionTimer.Stop()
+	// From now on the timer schedules quorum checks instead of elections.
+	rf.resetElectionTimerLocked()
 	// A single-node cluster commits the no-op right away.
 	rf.advanceCommitLocked()
 	// Fire immediately to assert leadership without waiting a full interval.
@@ -413,6 +417,7 @@ func (rf *Raft) initLeaderStateLocked() {
 		rf.nextIndex[p.id] = rf.lastLogIndexLocked() + 1
 		rf.matchIndex[p.id] = 0
 	}
+	rf.heardFrom = make(map[NodeID]struct{}, len(rf.peers))
 	rf.mismatchLogged = make(map[NodeID]struct{})
 }
 
@@ -434,12 +439,34 @@ func (rf *Raft) adoptHigherTermLocked(term Term) {
 	rf.dirty = true
 	rf.cancelRPCsLocked()
 
-	wasLeader := rf.role == Leader
-	rf.role = Follower
-	if wasLeader {
-		rf.heartbeatTimer.Stop()
-		rf.resetElectionTimerLocked()
+	if rf.role == Leader {
+		rf.stepDownLocked()
+	} else {
+		rf.role = Follower
 	}
+}
+
+// checkQuorumLocked runs on every election timeout of a leader and steps it
+// down unless a quorum has answered it since the previous one (CheckQuorum,
+// §6.2 of Ongaro's thesis). A leader cut off in a minority would otherwise
+// keep accepting commands it can never commit until the partition heals.
+func (rf *Raft) checkQuorumLocked() {
+	if len(rf.heardFrom)+1 >= rf.quorum() {
+		clear(rf.heardFrom)
+		rf.resetElectionTimerLocked()
+		return
+	}
+	rf.logger.Info("lost contact with a quorum, stepping down",
+		"term", rf.currentTerm, "heardFrom", len(rf.heardFrom))
+	rf.stepDownLocked()
+}
+
+// stepDownLocked turns a leader into a follower of its current term.
+func (rf *Raft) stepDownLocked() {
+	rf.role = Follower
+	rf.heartbeatTimer.Stop()
+	rf.resetElectionTimerLocked()
+	rf.cancelRPCsLocked()
 }
 
 func (rf *Raft) resetElectionTimerLocked() {

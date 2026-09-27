@@ -16,12 +16,16 @@ func (rf *Raft) onElectionTimeout(ctx context.Context) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	if rf.stoppedLocked() || rf.role == Leader {
+	if rf.stoppedLocked() {
 		return
 	}
 	// Run may have received the tick while a handler held mu and re-armed the
 	// timer, e.g. on a heartbeat from a live leader. The tick is then stale.
 	if rf.clock.Now().Before(rf.electionDeadline) {
+		return
+	}
+	if rf.role == Leader {
+		rf.checkQuorumLocked()
 		return
 	}
 	rf.startElectionLocked(ctx)

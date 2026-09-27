@@ -2,6 +2,7 @@ package raft
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"slices"
@@ -219,6 +220,18 @@ func (c *testCluster) leaders() []*Raft {
 		}
 	}
 	return out
+}
+
+// leaderOtherThan returns a live leader other than old, or nil. A cut-off
+// leader steps down on its own (CheckQuorum), so tests that isolate one wait
+// for its successor rather than for two leaders at once.
+func (c *testCluster) leaderOtherThan(old *Raft) *Raft {
+	for _, rf := range c.leaders() {
+		if rf != old {
+			return rf
+		}
+	}
+	return nil
 }
 
 func TestCluster_ElectsExactlyOneLeader(t *testing.T) {
@@ -547,26 +560,60 @@ func TestCluster_SplitVoteThenThreeToOneElectsLeader(t *testing.T) {
 	})
 }
 
-func TestCluster_HealedOldLeaderStepsDown(t *testing.T) {
+func TestCluster_CutOffLeaderStepsDownAndRejoinsAsFollower(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		c := newTestCluster(t, 3)
-		c.advanceUntil(t, 5*time.Second, func() bool { return len(c.leaders()) == 1 })
-		oldLeader := c.leaders()[0]
+		oldLeader := c.waitLeader(t)
+		oldTerm, _ := oldLeader.GetState()
 
-		// Cut off, the old leader keeps believing it leads its stale term.
+		// Cut off, the old leader hears from no quorum and steps down within
+		// two election timeouts: the first check may still count answers
+		// from before the partition (CheckQuorum).
 		c.tr.setPartitioned(oldLeader.id, true)
-		c.advanceUntil(t, 5*time.Second, func() bool { return len(c.leaders()) == 2 })
-
-		c.tr.setPartitioned(oldLeader.id, false)
-		c.advanceUntil(t, 5*time.Second, func() bool { return len(c.leaders()) == 1 })
-
-		newLeader := c.leaders()[0]
-		if newLeader == oldLeader {
-			t.Fatalf("stale leader %s deposed the leader of a newer term", oldLeader.id)
+		c.advanceUntil(t, 2*clusterElectionMax, func() bool {
+			_, isLeader := oldLeader.GetState()
+			return !isLeader
+		})
+		if _, _, err := oldLeader.Start([]byte("x")); !errors.Is(err, ErrNotLeader) {
+			t.Fatalf("cut-off leader still accepts commands: %v", err)
 		}
-		leaderTerm, _ := newLeader.GetState()
-		if role, term := roleAndTerm(oldLeader); role != Follower || term != leaderTerm {
-			t.Fatalf("old leader: expected Follower in term %d, got %v in term %d", leaderTerm, role, term)
+		c.advanceUntil(t, 5*time.Second, func() bool {
+			newLeader := c.leaderOtherThan(oldLeader)
+			if newLeader == nil {
+				return false
+			}
+			term, _ := newLeader.GetState()
+			return term > oldTerm
+		})
+
+		// In isolation the old leader keeps starting elections, so its term
+		// may be ahead and force one more election once it rejoins. Its log
+		// is stale, so it must not win it (§5.4.1).
+		c.tr.setPartitioned(oldLeader.id, false)
+		c.advanceUntil(t, 5*time.Second, func() bool {
+			leaders := c.leaders()
+			if len(leaders) != 1 || leaders[0] == oldLeader {
+				return false
+			}
+			leaderTerm, _ := leaders[0].GetState()
+			role, term := roleAndTerm(oldLeader)
+			return role == Follower && term == leaderTerm
+		})
+	})
+}
+
+func TestCluster_HealthyLeaderPassesQuorumChecks(t *testing.T) {
+	// One peer down still leaves a quorum, so the leader must keep its term
+	// through many quorum checks.
+	synctest.Test(t, func(t *testing.T) {
+		c := newTestCluster(t, 3)
+		leader := c.waitLeader(t)
+		term, _ := leader.GetState()
+		c.crash(c.followerOf(leader))
+
+		c.advance(10 * clusterElectionMax)
+		if newTerm, isLeader := leader.GetState(); !isLeader || newTerm != term {
+			t.Fatalf("leader with a quorum lost its term: term %d -> %d, isLeader=%v", term, newTerm, isLeader)
 		}
 	})
 }

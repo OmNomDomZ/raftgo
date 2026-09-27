@@ -391,15 +391,13 @@ func TestCluster_PartitionedLeaderRejoinsAndDropsUncommittedEntries(t *testing.T
 			}
 			stale = append(stale, index)
 		}
-		c.advanceUntil(t, 5*time.Second, func() bool { return len(c.leaders()) == 2 })
+		c.advanceUntil(t, 5*time.Second, func() bool { return c.leaderOtherThan(leader1) != nil })
 		c.one(t, "b", 2)
 
 		// Now the second leader is cut off, and leader1 rejoins the third node.
-		var leader2 *Raft
-		for _, rf := range c.leaders() {
-			if rf != leader1 {
-				leader2 = rf
-			}
+		leader2 := c.leaderOtherThan(leader1)
+		if leader2 == nil {
+			t.Fatalf("no leader besides %s after committing b", leader1.id)
 		}
 		c.tr.setPartitioned(leader2.id, true)
 		c.tr.setPartitioned(leader1.id, false)
@@ -429,17 +427,15 @@ func TestCluster_ConflictTermSkipsDivergentTermsQuickly(t *testing.T) {
 				t.Fatalf("Start: %v", err)
 			}
 		}
-		c.advanceUntil(t, 5*time.Second, func() bool { return len(c.leaders()) == 2 })
+		c.advanceUntil(t, 5*time.Second, func() bool { return c.leaderOtherThan(old) != nil })
 		for k := range 50 {
 			c.one(t, fmt.Sprint("new", k), 2)
 		}
 		// A leader elected now starts with nextIndex past all 50 new entries,
 		// so it has to back off over old's whole conflicting run.
-		var leader2 *Raft
-		for _, rf := range c.leaders() {
-			if rf != old {
-				leader2 = rf
-			}
+		leader2 := c.leaderOtherThan(old)
+		if leader2 == nil {
+			t.Fatalf("no leader besides %s after committing new entries", old.id)
 		}
 		term2, _ := leader2.GetState()
 		i2 := slices.Index(c.nodes, leader2)

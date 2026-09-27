@@ -130,6 +130,9 @@ func (rf *Raft) sendAppendEntries(ctx context.Context, peer NodeID, args *Append
 	if rf.role != Leader || rf.currentTerm != args.Term {
 		return false
 	}
+	// Any answer in our term, success or not, shows that peer has not moved
+	// on to a later term, so it still backs this leader.
+	rf.heardFrom[peer] = struct{}{}
 
 	if reply.Success {
 		// peer's log now matches ours through the last entry sent (§5.3).
