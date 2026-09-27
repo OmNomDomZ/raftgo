@@ -2,6 +2,13 @@ package raft
 
 // Storage persists a node's PersistentState and log. Writes must be durable
 // before they return, and implementations must be safe for concurrent use.
+//
+// TODO: specify failure semantics before the file-backed implementation. The
+// node treats a failed write as transient and retries it later, but after a
+// failed fsync the kernel may drop the dirty pages and a retried fsync can
+// report success without the data on disk (Linux). An implementation must
+// then fail every later call instead of letting a retry succeed, or the node
+// could acknowledge entries or a vote a restart would lose.
 type Storage interface {
 	SaveState(state PersistentState) error
 	// LoadState returns the zero PersistentState for a fresh node with no

@@ -48,6 +48,11 @@ func (rf *Raft) Start(cmd []byte) (Index, Term, error) {
 	index := rf.lastLogIndexLocked() + 1
 	entry := LogEntry{Term: rf.currentTerm, Kind: EntryCommand, Command: cmd}
 	if err := rf.storeLogLocked(index, []LogEntry{entry}); err != nil {
+		// TODO: step down here. Heartbeats write nothing, so a leader whose
+		// disk has failed keeps passing CheckQuorum and holding followers'
+		// election timers back, while every Start fails: the cluster cannot
+		// take writes until this node dies. Once deposed it cannot win again,
+		// since startElectionLocked needs SaveState to succeed.
 		return 0, rf.currentTerm, fmt.Errorf("raft: persist entry %d: %w", index, err)
 	}
 	rf.advanceCommitLocked()
