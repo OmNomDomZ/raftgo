@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"slices"
+	"strings"
 	"testing"
 	"testing/synctest"
 )
@@ -495,6 +497,42 @@ func TestSendAppendEntries_ReplyForEarlierTermIsIgnored(t *testing.T) {
 	defer rf.mu.Unlock()
 	if rf.matchIndex["B"] != 0 {
 		t.Fatalf("success for a term-2 request counted in term 3: matchIndex %d", rf.matchIndex["B"])
+	}
+}
+
+func TestSendAppendEntries_BrokenPeerLoggedOncePerTerm(t *testing.T) {
+	var logs bytes.Buffer
+	cfg := testConfig(&fakeStorage{}, "A", "B", "C")
+	cfg.Logger = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelError}))
+	rf, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	markRunning(rf)
+	setLog(t, rf, entriesOfTerms(2, 2, 2)...)
+	setRoleAndTerm(rf, Leader, 2, "A")
+	// B rejects a prefix it has already matched, which no correct peer does.
+	rf.transport.(*fakeTransport).register("B", replyingPeer{func(args *AppendEntriesArgs) *AppendEntriesReply {
+		return &AppendEntriesReply{Term: args.Term, ConflictIndex: 1}
+	}})
+	rf.mu.Lock()
+	rf.matchIndex["B"], rf.nextIndex["B"] = 2, 3
+	rf.mu.Unlock()
+
+	for range 3 {
+		rf.mu.Lock()
+		args := rf.appendEntriesArgsLocked("B")
+		rf.mu.Unlock()
+		rf.sendAppendEntries(context.Background(), "B", args)
+	}
+	if n := strings.Count(logs.String(), "rejected a prefix"); n != 1 {
+		t.Fatalf("broken peer logged %d times, want once: %s", n, logs.String())
+	}
+	rf.mu.Lock()
+	next := rf.nextIndex["B"]
+	rf.mu.Unlock()
+	if next != 3 {
+		t.Fatalf("nextIndex backed off below matchIndex to %d", next)
 	}
 }
 

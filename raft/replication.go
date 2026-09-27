@@ -144,8 +144,12 @@ func (rf *Raft) sendAppendEntries(ctx context.Context, peer NodeID, args *Append
 	if args.PrevLogIndex <= rf.matchIndex[peer] {
 		// peer already matched a longer prefix of our log in this term, and
 		// only a leader of a later term can change it (Log Matching, §5.3).
-		rf.logger.Error("peer rejected a prefix it had matched (Log Matching, §5.3)",
-			"peer", peer, "term", args.Term, "prevLogIndex", args.PrevLogIndex, "matchIndex", rf.matchIndex[peer])
+		// Every heartbeat resends the same request, so report it once.
+		if _, logged := rf.mismatchLogged[peer]; !logged {
+			rf.mismatchLogged[peer] = struct{}{}
+			rf.logger.Error("peer rejected a prefix it had matched (Log Matching, §5.3)",
+				"peer", peer, "term", args.Term, "prevLogIndex", args.PrevLogIndex, "matchIndex", rf.matchIndex[peer])
+		}
 		return false
 	}
 	// Skip back over the whole conflicting term instead of one entry per

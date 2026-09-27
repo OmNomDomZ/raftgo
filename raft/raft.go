@@ -279,6 +279,10 @@ type Raft struct {
 	// (Figure 2), reset on every election win; see initLeaderStateLocked.
 	nextIndex  map[NodeID]Index
 	matchIndex map[NodeID]Index
+	// mismatchLogged holds the peers already reported for rejecting a prefix
+	// they had matched, so a broken peer is logged once per term instead of
+	// on every heartbeat.
+	mismatchLogged map[NodeID]struct{}
 }
 
 // New creates a node, restoring its term and vote from cfg.Storage if a
@@ -409,6 +413,7 @@ func (rf *Raft) initLeaderStateLocked() {
 		rf.nextIndex[p.id] = rf.lastLogIndexLocked() + 1
 		rf.matchIndex[p.id] = 0
 	}
+	rf.mismatchLogged = make(map[NodeID]struct{})
 }
 
 // adoptHigherTermLocked moves to a newer term and steps down (§5.1). It does
