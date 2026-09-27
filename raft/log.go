@@ -30,6 +30,10 @@ func (rf *Raft) lastLogIndexLocked() Index {
 	return Index(len(rf.log) - 1)
 }
 
+func (rf *Raft) lastLogTermLocked() Term {
+	return rf.log[len(rf.log)-1].Term
+}
+
 // storeLogLocked makes entries durable in place of the log from index from
 // on, and only then adopts them in memory, so a failed write leaves the log
 // unchanged: a node must not acknowledge entries a restart would lose.

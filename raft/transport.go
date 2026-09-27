@@ -27,8 +27,10 @@ type RPCHandler interface {
 
 // RequestVoteArgs is the RequestVote RPC request (Figure 2).
 type RequestVoteArgs struct {
-	Term        Term
-	CandidateID NodeID
+	Term         Term
+	CandidateID  NodeID
+	LastLogIndex Index
+	LastLogTerm  Term
 }
 
 // RequestVoteReply is the RequestVote RPC response (Figure 2).

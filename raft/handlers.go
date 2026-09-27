@@ -45,9 +45,13 @@ func (rf *Raft) HandleRequestVote(args *RequestVoteArgs) (*RequestVoteReply, err
 		rf.adoptHigherTermLocked(args.Term)
 	}
 
-	// TODO(3B): also require the candidate's log to be at least as up-to-date
-	// as ours (§5.4.1).
 	if rf.votedFor != "" && rf.votedFor != args.CandidateID {
+		return &RequestVoteReply{Term: rf.currentTerm, VoteGranted: false}, nil
+	}
+	// A candidate whose log lacks an entry we have cannot hold every committed
+	// entry, so it must not win (Leader Completeness, §5.4.1). A denial is no
+	// reason to hold off our own election, so the timer is not reset.
+	if !rf.upToDateLocked(args.LastLogIndex, args.LastLogTerm) {
 		return &RequestVoteReply{Term: rf.currentTerm, VoteGranted: false}, nil
 	}
 
@@ -114,6 +118,15 @@ func (rf *Raft) HandleAppendEntries(args *AppendEntriesArgs) (*AppendEntriesRepl
 	return &AppendEntriesReply{Term: rf.currentTerm, Success: true}, nil
 }
 
+// upToDateLocked reports whether a log ending with an entry of lastTerm at
+// lastIndex is at least as up-to-date as ours (§5.4.1).
+func (rf *Raft) upToDateLocked(lastIndex Index, lastTerm Term) bool {
+	if ours := rf.lastLogTermLocked(); lastTerm != ours {
+		return lastTerm > ours
+	}
+	return lastIndex >= rf.lastLogIndexLocked()
+}
+
 // runningLocked reports why the node cannot answer RPCs, if it cannot.
 func (rf *Raft) runningLocked() error {
 	switch {
@@ -140,6 +153,14 @@ func (rf *Raft) checkRequestVoteArgs(args *RequestVoteArgs) error {
 		return fmt.Errorf("%w: RequestVote from this node itself", ErrInvalidArgs)
 	case args.Term == 0:
 		return fmt.Errorf("%w: RequestVote from %s in term 0", ErrInvalidArgs, args.CandidateID)
+	// A candidate's log only holds entries of terms up to its own, and the
+	// entry at index 0 alone has term 0.
+	case args.LastLogTerm > args.Term:
+		return fmt.Errorf("%w: RequestVote from %s in term %d with last log term %d",
+			ErrInvalidArgs, args.CandidateID, args.Term, args.LastLogTerm)
+	case (args.LastLogIndex == 0) != (args.LastLogTerm == 0):
+		return fmt.Errorf("%w: RequestVote from %s with last log entry %d of term %d",
+			ErrInvalidArgs, args.CandidateID, args.LastLogIndex, args.LastLogTerm)
 	}
 	return nil
 }
