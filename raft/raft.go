@@ -228,6 +228,10 @@ type Raft struct {
 	// electionDeadline is when the armed election timer is due; see
 	// onElectionTimeout.
 	electionDeadline time.Time
+
+	// log is always durable: storeLogLocked writes it before adopting it.
+	// See log.go for its layout.
+	log []LogEntry
 }
 
 // New creates a node, restoring its term and vote from cfg.Storage if a
@@ -241,6 +245,15 @@ func New(cfg Config) (*Raft, error) {
 	state, err := cfg.Storage.LoadState()
 	if err != nil {
 		return nil, fmt.Errorf("raft: load state: %w", err)
+	}
+	entries, err := cfg.Storage.LoadLog()
+	if err != nil {
+		return nil, fmt.Errorf("raft: load log: %w", err)
+	}
+	// A node only stores entries of terms it has already adopted durably, so
+	// anything else means the storage is corrupt.
+	if err := checkEntries(0, entries, state.CurrentTerm); err != nil {
+		return nil, fmt.Errorf("raft: invalid stored log: %w", err)
 	}
 
 	rf := &Raft{
@@ -258,6 +271,7 @@ func New(cfg Config) (*Raft, error) {
 		role:              Follower,
 		currentTerm:       state.CurrentTerm,
 		votedFor:          state.VotedFor,
+		log:               append([]LogEntry{{}}, entries...),
 	}
 	// The Timer interface has no way to create a stopped timer; Run arms the
 	// election timer.

@@ -1,17 +1,28 @@
 package raft
 
-// Storage persists a node's PersistentState. SaveState must be durable before
-// it returns, and implementations must be safe for concurrent use.
+// Storage persists a node's PersistentState and log. Writes must be durable
+// before they return, and implementations must be safe for concurrent use.
 type Storage interface {
 	SaveState(state PersistentState) error
 	// LoadState returns the zero PersistentState for a fresh node with no
 	// saved state. Saved state that cannot be read must be reported as an
 	// error, never as a fresh node: that would roll back currentTerm/votedFor.
 	LoadState() (PersistentState, error)
+
+	// StoreLog replaces the stored entries from index from on with entries,
+	// as one atomic write: the node truncates a conflicting suffix and
+	// appends in one call (§5.3). from is at least 1 and at most one past
+	// the last stored index. StoreLog must not modify entries or keep
+	// references into them after it returns.
+	StoreLog(from Index, entries []LogEntry) error
+	// LoadLog returns the stored entries, the first one at index 1. Like
+	// LoadState, it must report a log it cannot read as an error, never as
+	// an empty one: that would lose committed entries.
+	LoadLog() ([]LogEntry, error)
 }
 
 // PersistentState is the term and vote that must survive a restart
-// (Figure 2). The log is not part of it and will be persisted separately.
+// (Figure 2). The log is persisted separately, through Storage.StoreLog.
 type PersistentState struct {
 	CurrentTerm Term
 	VotedFor    NodeID // "" if no vote was cast in CurrentTerm
