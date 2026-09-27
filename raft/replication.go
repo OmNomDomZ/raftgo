@@ -104,10 +104,9 @@ func (rf *Raft) appendEntriesArgsLocked(peer NodeID) *AppendEntriesArgs {
 // whether peer needs another AppendEntries right away: its log is still
 // behind, or it rejected args and nextIndex has backed off.
 func (rf *Raft) sendAppendEntries(ctx context.Context, peer NodeID, args *AppendEntriesArgs) (again bool) {
-	// An AppendEntries is stale once the next heartbeat is due. Waiting
-	// longer on a lost one would hold back the next and let the peer's
-	// election timer fire; MaxEntriesPerRPC keeps a full one small enough.
-	ctx, cancel := context.WithTimeout(ctx, rf.heartbeatInterval)
+	// Waiting long on a lost AppendEntries would hold back the next and let
+	// the peer's election timer fire; see Config.AppendEntriesTimeout.
+	ctx, cancel := rf.withTimeout(ctx, rf.appendEntriesTimeout)
 	defer cancel()
 	reply, err := rf.transport.AppendEntries(ctx, peer, args)
 	if err == nil {

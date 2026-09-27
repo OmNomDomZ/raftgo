@@ -37,11 +37,11 @@ func (r Role) String() string {
 }
 
 const (
-	defaultHeartbeatInterval = 50 * time.Millisecond
-	defaultRPCTimeout        = 200 * time.Millisecond
-	defaultElectionMin       = 150 * time.Millisecond
-	defaultElectionMax       = 300 * time.Millisecond
-	defaultMaxEntriesPerRPC  = 64
+	defaultHeartbeatInterval  = 50 * time.Millisecond
+	defaultRequestVoteTimeout = 200 * time.Millisecond
+	defaultElectionMin        = 150 * time.Millisecond
+	defaultElectionMax        = 300 * time.Millisecond
+	defaultMaxEntriesPerRPC   = 64
 )
 
 // Config configures a node. ID, Peers, Transport, Storage and ApplyCh are
@@ -70,14 +70,21 @@ type Config struct {
 	// global math/rand/v2 source.
 	Rand *rand.Rand
 	// HeartbeatInterval must stay well below the minimum election timeout, or
-	// followers will start elections while the leader is healthy (§5.2). It
-	// also bounds each heartbeat RPC. Default: 50ms.
+	// followers will start elections while the leader is healthy (§5.2).
+	// Default: 50ms.
 	HeartbeatInterval time.Duration
-	// RPCTimeout bounds each RequestVote RPC. Default: 200ms.
-	RPCTimeout time.Duration
+	// RequestVoteTimeout bounds each RequestVote RPC. Default: 200ms.
+	RequestVoteTimeout time.Duration
+	// AppendEntriesTimeout bounds each AppendEntries RPC. At most one is in
+	// flight per peer, so a lost one holds back the next for this long; it
+	// must stay below the minimum election timeout, or the peer's election
+	// timer fires under a healthy leader (§5.2). Raise it when a follower's
+	// disk or the network is slow enough that RPCs carrying entries time out.
+	// Default: HeartbeatInterval.
+	AppendEntriesTimeout time.Duration
 	// MaxEntriesPerRPC bounds the entries in one AppendEntries, so catching
 	// up a lagging follower does not produce an RPC that cannot finish
-	// within HeartbeatInterval. Default: 64.
+	// within AppendEntriesTimeout. Default: 64.
 	MaxEntriesPerRPC int
 
 	Logger *slog.Logger // default discards everything
@@ -129,8 +136,11 @@ func (c *Config) validateAndSetDefaults() error {
 	if c.HeartbeatInterval < 0 {
 		errs = append(errs, fmt.Errorf("negative heartbeat interval %v", c.HeartbeatInterval))
 	}
-	if c.RPCTimeout < 0 {
-		errs = append(errs, fmt.Errorf("negative RPC timeout %v", c.RPCTimeout))
+	if c.RequestVoteTimeout < 0 {
+		errs = append(errs, fmt.Errorf("negative RequestVote timeout %v", c.RequestVoteTimeout))
+	}
+	if c.AppendEntriesTimeout < 0 {
+		errs = append(errs, fmt.Errorf("negative AppendEntries timeout %v", c.AppendEntriesTimeout))
 	}
 	if c.ElectionTimeoutMin < 0 || c.ElectionTimeoutMax < 0 {
 		errs = append(errs, fmt.Errorf("negative election timeout bounds [%v, %v)",
@@ -143,9 +153,14 @@ func (c *Config) validateAndSetDefaults() error {
 	if electionMax <= electionMin {
 		errs = append(errs, fmt.Errorf("election timeout max %v must be above min %v", electionMax, electionMin))
 	}
-	if hb := cmp.Or(c.HeartbeatInterval, defaultHeartbeatInterval); hb >= electionMin {
+	hb := cmp.Or(c.HeartbeatInterval, defaultHeartbeatInterval)
+	if hb >= electionMin {
 		errs = append(errs, fmt.Errorf("heartbeat interval %v must be below the minimum election timeout %v",
 			hb, electionMin))
+	}
+	if aet := cmp.Or(c.AppendEntriesTimeout, hb); aet >= electionMin {
+		errs = append(errs, fmt.Errorf("AppendEntries timeout %v must be below the minimum election timeout %v",
+			aet, electionMin))
 	}
 	if err := errors.Join(errs...); err != nil {
 		return fmt.Errorf("raft: invalid config: %w", err)
@@ -163,11 +178,10 @@ func (c *Config) validateAndSetDefaults() error {
 			c.electionTimeout = func() time.Duration { return electionMin + rand.N(span) }
 		}
 	}
-	if c.HeartbeatInterval == 0 {
-		c.HeartbeatInterval = defaultHeartbeatInterval
-	}
-	if c.RPCTimeout == 0 {
-		c.RPCTimeout = defaultRPCTimeout
+	c.HeartbeatInterval = hb
+	c.AppendEntriesTimeout = cmp.Or(c.AppendEntriesTimeout, hb)
+	if c.RequestVoteTimeout == 0 {
+		c.RequestVoteTimeout = defaultRequestVoteTimeout
 	}
 	if c.MaxEntriesPerRPC == 0 {
 		c.MaxEntriesPerRPC = defaultMaxEntriesPerRPC
@@ -204,16 +218,17 @@ type peer struct {
 // Raft is a single Raft node.
 type Raft struct {
 	// Immutable after New.
-	id                NodeID
-	peers             []peer
-	transport         Transport
-	storage           Storage
-	clock             Clock
-	electionTimeout   func() time.Duration
-	heartbeatInterval time.Duration
-	rpcTimeout        time.Duration
-	maxEntriesPerRPC  int
-	applyCh           chan<- ApplyMsg
+	id                   NodeID
+	peers                []peer
+	transport            Transport
+	storage              Storage
+	clock                Clock
+	electionTimeout      func() time.Duration
+	heartbeatInterval    time.Duration
+	requestVoteTimeout   time.Duration
+	appendEntriesTimeout time.Duration
+	maxEntriesPerRPC     int
+	applyCh              chan<- ApplyMsg
 	// applyWake wakes the applier; see apply.
 	applyWake      chan struct{}
 	logger         *slog.Logger
@@ -242,7 +257,7 @@ type Raft struct {
 	// so a duplicated grant (e.g. from a transport retry) is counted once.
 	votes map[NodeID]struct{}
 	// rpcCtx scopes outgoing RPCs to the current term and role, so RPCs sent
-	// for an earlier one are cancelled instead of running out rpcTimeout. nil
+	// for an earlier one are cancelled instead of running out their timeout. nil
 	// until the next send creates it; see cancelRPCsLocked.
 	rpcCtx    context.Context
 	rpcCancel context.CancelFunc
@@ -289,24 +304,25 @@ func New(cfg Config) (*Raft, error) {
 	}
 
 	rf := &Raft{
-		id:                cfg.ID,
-		transport:         cfg.Transport,
-		storage:           cfg.Storage,
-		clock:             cfg.Clock,
-		electionTimeout:   cfg.electionTimeout,
-		heartbeatInterval: cfg.HeartbeatInterval,
-		rpcTimeout:        cfg.RPCTimeout,
-		maxEntriesPerRPC:  cfg.MaxEntriesPerRPC,
-		applyCh:           cfg.ApplyCh,
-		applyWake:         make(chan struct{}, 1),
-		logger:            cfg.Logger.With("node", cfg.ID),
-		onFatal:           cfg.OnFatal,
-		electionTimer:     cfg.Clock.NewTimer(0),
-		heartbeatTimer:    cfg.Clock.NewTimer(0),
-		role:              Follower,
-		currentTerm:       state.CurrentTerm,
-		votedFor:          state.VotedFor,
-		log:               append([]LogEntry{{}}, entries...),
+		id:                   cfg.ID,
+		transport:            cfg.Transport,
+		storage:              cfg.Storage,
+		clock:                cfg.Clock,
+		electionTimeout:      cfg.electionTimeout,
+		heartbeatInterval:    cfg.HeartbeatInterval,
+		requestVoteTimeout:   cfg.RequestVoteTimeout,
+		appendEntriesTimeout: cfg.AppendEntriesTimeout,
+		maxEntriesPerRPC:     cfg.MaxEntriesPerRPC,
+		applyCh:              cfg.ApplyCh,
+		applyWake:            make(chan struct{}, 1),
+		logger:               cfg.Logger.With("node", cfg.ID),
+		onFatal:              cfg.OnFatal,
+		electionTimer:        cfg.Clock.NewTimer(0),
+		heartbeatTimer:       cfg.Clock.NewTimer(0),
+		role:                 Follower,
+		currentTerm:          state.CurrentTerm,
+		votedFor:             state.VotedFor,
+		log:                  append([]LogEntry{{}}, entries...),
 	}
 	// The Timer interface has no way to create a stopped timer; Run arms the
 	// election timer.
@@ -434,6 +450,26 @@ func (rf *Raft) rpcContextLocked(parent context.Context) context.Context {
 		rf.rpcCtx, rf.rpcCancel = context.WithCancel(parent)
 	}
 	return rf.rpcCtx
+}
+
+// withTimeout is like context.WithTimeout, but on rf.clock rather than on
+// wall time, so RPC deadlines follow the same clock as the node's timers and
+// tests can drive both. Once the deadline passes, ctx.Err() is
+// context.Canceled and context.Cause(ctx) is context.DeadlineExceeded. The
+// goroutine is not tracked by wg: it exits as soon as the caller's deferred
+// cancel runs.
+func (rf *Raft) withTimeout(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancelCause(parent)
+	timer := rf.clock.NewTimer(d)
+	go func() {
+		defer timer.Stop()
+		select {
+		case <-timer.C():
+			cancel(context.DeadlineExceeded)
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, func() { cancel(context.Canceled) }
 }
 
 // cancelRPCsLocked aborts in-flight RPCs; it must be called whenever the term

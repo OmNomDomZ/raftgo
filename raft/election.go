@@ -62,7 +62,7 @@ func (rf *Raft) startElectionLocked(ctx context.Context) {
 }
 
 func (rf *Raft) requestVote(ctx context.Context, peer NodeID, args *RequestVoteArgs) {
-	ctx, cancel := context.WithTimeout(ctx, rf.rpcTimeout)
+	ctx, cancel := rf.withTimeout(ctx, rf.requestVoteTimeout)
 	defer cancel()
 	reply, err := rf.transport.RequestVote(ctx, peer, args)
 	if err == nil {

@@ -39,7 +39,8 @@ func TestNew_RejectsInvalidConfig(t *testing.T) {
 		{"missing apply channel", func(c *Config) { c.ApplyCh = nil }},
 		{"negative max entries per RPC", func(c *Config) { c.MaxEntriesPerRPC = -1 }},
 		{"negative heartbeat interval", func(c *Config) { c.HeartbeatInterval = -time.Millisecond }},
-		{"negative RPC timeout", func(c *Config) { c.RPCTimeout = -time.Millisecond }},
+		{"negative RequestVote timeout", func(c *Config) { c.RequestVoteTimeout = -time.Millisecond }},
+		{"negative AppendEntries timeout", func(c *Config) { c.AppendEntriesTimeout = -time.Millisecond }},
 		{"heartbeat not below default election timeout", func(c *Config) {
 			c.ElectionTimeoutMin, c.ElectionTimeoutMax = 0, 0
 			c.HeartbeatInterval = defaultElectionMin
@@ -49,6 +50,9 @@ func TestNew_RejectsInvalidConfig(t *testing.T) {
 		}},
 		{"heartbeat not below custom election timeout", func(c *Config) {
 			c.HeartbeatInterval = c.ElectionTimeoutMin
+		}},
+		{"AppendEntries timeout not below election timeout", func(c *Config) {
+			c.AppendEntriesTimeout = c.ElectionTimeoutMin
 		}},
 		{"negative election timeout min", func(c *Config) { c.ElectionTimeoutMin = -time.Millisecond }},
 		{"negative election timeout max", func(c *Config) { c.ElectionTimeoutMax = -time.Millisecond }},
