@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -94,6 +95,36 @@ func TestReadIndex_OnlyTheLeaderServesReads(t *testing.T) {
 	if _, err := rf.ReadIndex(context.Background()); !errors.As(err, &nle) || nle.Leader != "B" {
 		t.Fatalf("follower: ReadIndex error %v, want a NotLeaderError naming B", err)
 	}
+}
+
+func TestReadIndex_FollowerConcurrentHeartbeats(t *testing.T) {
+	rf, _ := newTestNode(t, "A", "B", "C")
+	args := &AppendEntriesArgs{Term: 1, LeaderID: "B"}
+	mustHandleAppendEntries(t, rf, args)
+
+	// A follower must refuse reads even while receiving heartbeats. The
+	// error's leader hint is shared protocol state and must be read under mu.
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		for range 10000 {
+			reply, err := rf.HandleAppendEntries(args)
+			if err != nil || !reply.Success {
+				t.Errorf("heartbeat = %v, %v; want success", reply, err)
+				return
+			}
+		}
+	})
+	wg.Go(func() {
+		for range 10000 {
+			index, err := rf.ReadIndex(context.Background())
+			var nle *NotLeaderError
+			if index != 0 || !errors.As(err, &nle) || nle.Leader != "B" {
+				t.Errorf("follower ReadIndex = %d, %v; want refusal naming B", index, err)
+				return
+			}
+		}
+	})
+	wg.Wait()
 }
 
 func TestReadIndex_SteppingDownFailsPendingReads(t *testing.T) {

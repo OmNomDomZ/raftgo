@@ -1,0 +1,48 @@
+package raft
+
+import (
+	"context"
+	"sync"
+	"testing"
+)
+
+func TestReviewReadIndexFollowerRace(t *testing.T) {
+	rf, _ := newTestNode(t, "A", "B", "C")
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 10000; i++ {
+			_, err := rf.HandleAppendEntries(&AppendEntriesArgs{Term: 1, LeaderID: "B"})
+			if err != nil {
+				t.Error(err)
+				return
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 10000; i++ {
+			rf.ReadIndex(context.Background())
+		}
+	}()
+	wg.Wait()
+}
+
+func TestReviewFailedDiskLeaderKeepsLeadership(t *testing.T) {
+	rf, st := newTestNode(t, "A", "B", "C")
+	setRoleAndTerm(rf, Leader, 1, "A")
+	st.setFailSave(true)
+	for i := 0; i < 10; i++ {
+		if _, _, err := rf.Start([]byte("x")); err == nil {
+			t.Fatal("expected storage error")
+		}
+		rf.mu.Lock()
+		rf.heardFrom["B"] = struct{}{}
+		rf.checkQuorumLocked()
+		rf.mu.Unlock()
+		if _, leader := rf.GetState(); !leader {
+			t.Fatal("reproduction changed: leader stepped down")
+		}
+	}
+}

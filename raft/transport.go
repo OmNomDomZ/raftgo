@@ -11,6 +11,9 @@ import "context"
 // the target's handler. Neither side may modify an args or reply value, nor
 // anything it references, once it has been passed on. That includes the
 // entries of an AppendEntries and their commands.
+// Handlers may retain references after returning, so completing an RPC does
+// not release its buffers for reuse. A transport that decodes into reusable
+// buffers must copy the data into immutable allocations before delivery.
 type Transport interface {
 	RequestVote(ctx context.Context, target NodeID, args *RequestVoteArgs) (*RequestVoteReply, error)
 	AppendEntries(ctx context.Context, target NodeID, args *AppendEntriesArgs) (*AppendEntriesReply, error)
@@ -19,8 +22,9 @@ type Transport interface {
 // RPCHandler is a node's inbound RPC surface; *Raft implements it. A non-nil
 // error means the node could not answer (e.g. storage failed): the transport
 // must fail the RPC for the caller instead of sending a reply, as if the
-// message had been lost. Handlers must not modify args or keep references
-// into them; see Transport.
+// message had been lost. Handlers must not modify args or anything they
+// reference, but may retain those references after returning. In particular,
+// Raft retains command bytes in its log without copying them; see Transport.
 type RPCHandler interface {
 	HandleRequestVote(args *RequestVoteArgs) (*RequestVoteReply, error)
 	HandleAppendEntries(args *AppendEntriesArgs) (*AppendEntriesReply, error)

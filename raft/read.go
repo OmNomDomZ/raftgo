@@ -30,8 +30,9 @@ func (rf *Raft) ReadIndex(ctx context.Context) (Index, error) {
 		return 0, err
 	}
 	if rf.role != Leader {
+		err := rf.notLeaderErrLocked()
 		rf.mu.Unlock()
-		return 0, rf.notLeaderErrLocked()
+		return 0, err
 	}
 	// Answers to AppendEntries sent from now on show that a quorum still
 	// knows no later term, so this node was still the leader after the call
