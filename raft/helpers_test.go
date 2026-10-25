@@ -18,6 +18,7 @@ func testConfig(st Storage, id NodeID, peers ...NodeID) Config {
 		Peers:              peers,
 		Transport:          newFakeTransport(),
 		Storage:            st,
+		ApplyCh:            make(chan ApplyMsg, 64),
 		Clock:              newFakeClock(time.Unix(0, 0)),
 		ElectionTimeoutMin: time.Second,
 		ElectionTimeoutMax: 2 * time.Second,
@@ -54,12 +55,19 @@ func markRunning(rf *Raft) {
 	rf.done = make(chan struct{})
 }
 
+// setRoleAndTerm puts rf in role and term directly. A Leader starts with a
+// fresh view of its peers, but without the no-op an election would append.
 func setRoleAndTerm(rf *Raft, role Role, term Term, votedFor NodeID) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	rf.role = role
 	rf.currentTerm = term
 	rf.votedFor = votedFor
+	rf.leaderID = ""
+	if role == Leader {
+		rf.leaderID = rf.id
+		rf.initLeaderStateLocked()
+	}
 }
 
 func roleAndTerm(rf *Raft) (Role, Term) {

@@ -93,7 +93,7 @@ func TestReply_NilWithoutErrorIsAFailedRPC(t *testing.T) {
 	setRoleAndTerm(rf, Candidate, 2, "A")
 
 	rf.requestVote(context.Background(), "B", &RequestVoteArgs{Term: 2, CandidateID: "A"})
-	rf.sendHeartbeat(context.Background(), "B", &AppendEntriesArgs{Term: 2, LeaderID: "A"})
+	rf.sendAppendEntries(context.Background(), "B", &AppendEntriesArgs{Term: 2, LeaderID: "A"}, 0)
 
 	if role, term := roleAndTerm(rf); role != Candidate || term != 2 {
 		t.Fatalf("nil reply changed state: %v in term %d", role, term)
@@ -116,7 +116,7 @@ func TestReply_WrongTermIsAFailedRPC(t *testing.T) {
 			}
 
 			setRoleAndTerm(rf, Leader, 2, "A")
-			rf.sendHeartbeat(context.Background(), "B", &AppendEntriesArgs{Term: 2, LeaderID: "A"})
+			rf.sendAppendEntries(context.Background(), "B", &AppendEntriesArgs{Term: 2, LeaderID: "A"}, 0)
 			if role, term := roleAndTerm(rf); role != Leader || term != 2 {
 				t.Fatalf("invalid AppendEntries reply changed state: %v in term %d", role, term)
 			}
@@ -138,14 +138,14 @@ func TestReply_InvalidIsLoggedAsError(t *testing.T) {
 
 	// C is not registered, so the request is lost.
 	rf.requestVote(context.Background(), "C", &RequestVoteArgs{Term: 2, CandidateID: "A"})
-	rf.sendHeartbeat(context.Background(), "C", &AppendEntriesArgs{Term: 2, LeaderID: "A"})
+	rf.sendAppendEntries(context.Background(), "C", &AppendEntriesArgs{Term: 2, LeaderID: "A"}, 0)
 	if logs.Len() != 0 {
 		t.Fatalf("lost messages logged above debug level: %s", logs.String())
 	}
 
 	rf.transport.(*fakeTransport).register("B", wrongTermPeer{term: 1})
 	rf.requestVote(context.Background(), "B", &RequestVoteArgs{Term: 2, CandidateID: "A"})
-	rf.sendHeartbeat(context.Background(), "B", &AppendEntriesArgs{Term: 2, LeaderID: "A"})
+	rf.sendAppendEntries(context.Background(), "B", &AppendEntriesArgs{Term: 2, LeaderID: "A"}, 0)
 	for _, rpc := range []string{"RequestVote", "AppendEntries"} {
 		if !strings.Contains(logs.String(), "level=ERROR msg=\""+rpc+" failed\"") {
 			t.Fatalf("invalid %s reply not logged as an error: %s", rpc, logs.String())
@@ -282,7 +282,7 @@ func TestFatal_OnFatalReturningStillStopsTheNode(t *testing.T) {
 	rf.adoptHigherTermLocked(3)
 }
 
-// blockedNode returns a node whose RPCs hang until cancelled. RPCTimeout is
+// blockedNode returns a node whose RPCs hang until cancelled. RequestVoteTimeout is
 // far beyond anything a test waits for, so a released RequestVote was
 // cancelled; a heartbeat also times out after HeartbeatInterval.
 func blockedNode(t *testing.T) (*Raft, blockingTransport) {
@@ -290,7 +290,7 @@ func blockedNode(t *testing.T) (*Raft, blockingTransport) {
 	tr := newBlockingTransport()
 	cfg := testConfig(&fakeStorage{}, "A", "B", "C")
 	cfg.Transport = tr
-	cfg.RPCTimeout = time.Hour
+	cfg.RequestVoteTimeout = time.Hour
 	rf, err := New(cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -397,27 +397,37 @@ func TestHeartbeats_AtMostOneInFlightPerPeer(t *testing.T) {
 	})
 }
 
-func TestHeartbeats_HungRPCTimesOutAfterOneInterval(t *testing.T) {
-	// A lost heartbeat must not hold back the next one for longer than an
-	// interval, or the peer's election timer fires under a healthy leader.
+func TestHeartbeats_HungRPCTimesOutAfterAppendEntriesTimeout(t *testing.T) {
+	// A lost heartbeat must not hold back the next one for longer than
+	// AppendEntriesTimeout, or the peer's election timer fires under a
+	// healthy leader. The deadline follows the node's Clock, not wall time.
 	synctest.Test(t, func(t *testing.T) {
 		rf, tr := blockedNode(t)
 		ctx, stop := runNode(rf)
 		defer stop()
 		setRoleAndTerm(rf, Leader, 2, "A")
 
-		start := time.Now()
+		clock := rf.clock.(*fakeClock)
 		rf.onHeartbeatTimeout(ctx)
-		for range rf.peers {
-			<-tr.released
+		synctest.Wait()
+		clock.Advance(rf.appendEntriesTimeout - time.Nanosecond)
+		synctest.Wait()
+		if got := releasedTerms(tr); len(got) != 0 {
+			t.Fatalf("hung heartbeats released before AppendEntriesTimeout: %v", got)
 		}
-		if elapsed := time.Since(start); elapsed != rf.heartbeatInterval {
-			t.Fatalf("hung heartbeats released after %v, want %v", elapsed, rf.heartbeatInterval)
+		clock.Advance(time.Nanosecond)
+		synctest.Wait()
+		if got := releasedTerms(tr); !slices.Equal(got, []Term{2, 2}) {
+			t.Fatalf("expected both hung heartbeats released after AppendEntriesTimeout, got %v", got)
 		}
 
+		// The next heartbeat goes out and times out the same way.
 		rf.onHeartbeatTimeout(ctx)
-		for range rf.peers {
-			<-tr.released
+		synctest.Wait()
+		clock.Advance(rf.appendEntriesTimeout)
+		synctest.Wait()
+		if got := releasedTerms(tr); len(got) != 2 {
+			t.Fatalf("expected the next heartbeats to go out and time out, got %v", got)
 		}
 	})
 }

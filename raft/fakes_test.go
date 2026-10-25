@@ -3,6 +3,7 @@ package raft
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"sync"
 	"testing"
@@ -137,11 +138,14 @@ func boundedTimeout(t testing.TB, lo, hi time.Duration, f func() time.Duration) 
 }
 
 type fakeStorage struct {
-	mu       sync.Mutex
-	state    PersistentState
-	saves    int // successful SaveState calls
-	failSave bool
-	failLoad bool
+	mu          sync.Mutex
+	state       PersistentState
+	log         []LogEntry
+	saves       int  // successful SaveState calls
+	logWrites   int  // successful StoreLog calls
+	failSave    bool // fails SaveState and StoreLog
+	failLoad    bool
+	failLoadLog bool
 }
 
 func (s *fakeStorage) saveCount() int {
@@ -176,28 +180,97 @@ func (s *fakeStorage) LoadState() (PersistentState, error) {
 	return s.state, nil
 }
 
+func (s *fakeStorage) StoreLog(from Index, entries []LogEntry) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.failSave {
+		return errors.New("fake storage: store log failed")
+	}
+	if from == 0 || from > Index(len(s.log))+1 {
+		return fmt.Errorf("fake storage: store from %d, log has %d entries", from, len(s.log))
+	}
+	s.log = append(slices.Clone(s.log[:from-1]), entries...)
+	s.logWrites++
+	return nil
+}
+
+func (s *fakeStorage) LoadLog() ([]LogEntry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.failLoadLog {
+		return nil, errors.New("fake storage: load log failed")
+	}
+	return slices.Clone(s.log), nil
+}
+
+// storedLog returns a copy of the stored log.
+func (s *fakeStorage) storedLog() []LogEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.log)
+}
+
+func (s *fakeStorage) logWriteCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.logWrites
+}
+
 // fakeTransport calls the target node's handlers synchronously in the
-// caller's goroutine. A partitioned node can neither send nor receive. If a
-// drop function is set, each request and each reply is lost when it returns
-// true; a lost reply means the target has already acted on the request.
+// caller's goroutine, unless a delay is set; see roundTrip. A partitioned
+// node can neither send nor receive. If a drop function is set, each request
+// and each reply is lost when it returns true; a lost reply means the target
+// has already acted on the request.
 type fakeTransport struct {
 	mu          sync.Mutex
 	nodes       map[NodeID]RPCHandler
 	partitioned map[NodeID]bool
 	drop        func() bool
+	// delay, if set, draws the latency of each request and each reply on
+	// clock. It is called under mu.
+	delay func() time.Duration
+	clock *fakeClock
+	// closed releases messages still in flight when a test ends.
+	closed chan struct{}
+	// appendEntries counts the AppendEntries requests delivered to each node.
+	appendEntries map[NodeID]int
+	// late counts requests delivered after their sender gave up on them.
+	late int
 }
 
 var (
 	errPartitioned = errors.New("fake transport: partitioned")
 	errUnknownNode = errors.New("fake transport: unknown node")
 	errDropped     = errors.New("fake transport: message dropped")
+	errClosed      = errors.New("fake transport: closed")
 )
 
 func newFakeTransport() *fakeTransport {
 	return &fakeTransport{
-		nodes:       map[NodeID]RPCHandler{},
-		partitioned: map[NodeID]bool{},
+		nodes:         map[NodeID]RPCHandler{},
+		partitioned:   map[NodeID]bool{},
+		closed:        make(chan struct{}),
+		appendEntries: map[NodeID]int{},
 	}
+}
+
+// setDelay makes every request and every reply take delay() of virtual time
+// on clock; nil makes delivery synchronous again.
+func (f *fakeTransport) setDelay(clock *fakeClock, delay func() time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.clock, f.delay = clock, delay
+}
+
+// close drops every message still in flight, so their goroutines exit.
+func (f *fakeTransport) close() {
+	close(f.closed)
+}
+
+func (f *fakeTransport) lateCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.late
 }
 
 func (f *fakeTransport) register(id NodeID, h RPCHandler) {
@@ -216,6 +289,18 @@ func (f *fakeTransport) setDrop(drop func() bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.drop = drop
+}
+
+func (f *fakeTransport) appendEntriesTo(id NodeID) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.appendEntries[id]
+}
+
+func (f *fakeTransport) isPartitioned(id NodeID) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.partitioned[id]
 }
 
 func (f *fakeTransport) dropped() bool {
@@ -240,40 +325,120 @@ func (f *fakeTransport) route(from, to NodeID) (RPCHandler, error) {
 	return h, nil
 }
 
-func (f *fakeTransport) RequestVote(ctx context.Context, target NodeID, args *RequestVoteArgs) (*RequestVoteReply, error) {
-	h, err := f.route(args.CandidateID, target)
+// linked returns the handler a message from from to to reaches now, if the
+// link between them is up.
+func (f *fakeTransport) linked(from, to NodeID) (RPCHandler, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	h, ok := f.nodes[to]
+	return h, ok && !f.partitioned[from] && !f.partitioned[to]
+}
+
+// travel waits out one message's latency, reporting false if the transport
+// closed first.
+func (f *fakeTransport) travel(clock *fakeClock, delay func() time.Duration) bool {
+	f.mu.Lock()
+	d := delay()
+	f.mu.Unlock()
+	if d <= 0 {
+		return true
+	}
+	timer := clock.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C():
+		return true
+	case <-f.closed:
+		return false
+	}
+}
+
+// roundTrip delivers a request from from to to through handle and returns
+// the reply. With a delay set, the messages travel in their own goroutine,
+// so the sender can give up on ctx while its request is still in flight. The
+// request then arrives late, possibly after newer ones and at a restarted
+// incarnation of the target, as on a real network.
+func roundTrip[Reply any](ctx context.Context, f *fakeTransport, from, to NodeID, handle func(RPCHandler) (*Reply, error)) (*Reply, error) {
+	h, err := f.route(from, to)
 	if err != nil {
 		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	reply, err := h.HandleRequestVote(args)
-	if err != nil {
-		return nil, err
+	f.mu.Lock()
+	clock, delay := f.clock, f.delay
+	f.mu.Unlock()
+
+	if delay == nil {
+		reply, err := handle(h)
+		if err != nil {
+			return nil, err
+		}
+		if f.dropped() {
+			return nil, errDropped
+		}
+		return reply, nil
 	}
-	if f.dropped() {
-		return nil, errDropped
+
+	type result struct {
+		reply *Reply
+		err   error
 	}
-	return reply, nil
+	res := make(chan result, 1)
+	go func() {
+		if !f.travel(clock, delay) {
+			res <- result{nil, errClosed}
+			return
+		}
+		// Whatever the target is by now receives the request, unless the
+		// link went down while it was in flight.
+		h, ok := f.linked(from, to)
+		if !ok {
+			res <- result{nil, errPartitioned}
+			return
+		}
+		if ctx.Err() != nil {
+			f.mu.Lock()
+			f.late++
+			f.mu.Unlock()
+		}
+		reply, err := handle(h)
+		if err != nil {
+			res <- result{nil, err}
+			return
+		}
+		if !f.travel(clock, delay) {
+			res <- result{nil, errClosed}
+			return
+		}
+		if _, ok := f.linked(to, from); !ok || f.dropped() {
+			res <- result{nil, errDropped}
+			return
+		}
+		res <- result{reply, nil}
+	}()
+	select {
+	case r := <-res:
+		return r.reply, r.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (f *fakeTransport) RequestVote(ctx context.Context, target NodeID, args *RequestVoteArgs) (*RequestVoteReply, error) {
+	return roundTrip(ctx, f, args.CandidateID, target, func(h RPCHandler) (*RequestVoteReply, error) {
+		return h.HandleRequestVote(args)
+	})
 }
 
 func (f *fakeTransport) AppendEntries(ctx context.Context, target NodeID, args *AppendEntriesArgs) (*AppendEntriesReply, error) {
-	h, err := f.route(args.LeaderID, target)
-	if err != nil {
-		return nil, err
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	reply, err := h.HandleAppendEntries(args)
-	if err != nil {
-		return nil, err
-	}
-	if f.dropped() {
-		return nil, errDropped
-	}
-	return reply, nil
+	return roundTrip(ctx, f, args.LeaderID, target, func(h RPCHandler) (*AppendEntriesReply, error) {
+		f.mu.Lock()
+		f.appendEntries[target]++
+		f.mu.Unlock()
+		return h.HandleAppendEntries(args)
+	})
 }
 
 // stubPeer answers every RPC with a fixed term and no vote/success, standing

@@ -1,0 +1,52 @@
+services:
+  node1:
+    build: .
+    command: ["-config", "/etc/raftgo/cluster.json", "-id", "node1"]
+    ports: ["127.0.0.1:8001:8080"]
+    volumes:
+      - ./config/cluster.json:/etc/raftgo/cluster.json:ro
+      - node1-data:/data
+    restart: unless-stopped
+    stop_grace_period: 15s
+  node2:
+    build: .
+    command: ["-config", "/etc/raftgo/cluster.json", "-id", "node2"]
+    ports: ["127.0.0.1:8002:8080"]
+    volumes:
+      - ./config/cluster.json:/etc/raftgo/cluster.json:ro
+      - node2-data:/data
+    restart: unless-stopped
+    stop_grace_period: 15s
+  node3:
+    build: .
+    command: ["-config", "/etc/raftgo/cluster.json", "-id", "node3"]
+    ports: ["127.0.0.1:8003:8080"]
+    volumes:
+      - ./config/cluster.json:/etc/raftgo/cluster.json:ro
+      - node3-data:/data
+    restart: unless-stopped
+    stop_grace_period: 15s
+  node4:
+    build: .
+    command: ["-config", "/etc/raftgo/cluster.json", "-id", "node4"]
+    ports: ["127.0.0.1:8004:8080"]
+    volumes:
+      - ./config/cluster.json:/etc/raftgo/cluster.json:ro
+      - node4-data:/data
+    restart: unless-stopped
+    stop_grace_period: 15s
+  node5:
+    build: .
+    command: ["-config", "/etc/raftgo/cluster.json", "-id", "node5"]
+    ports: ["127.0.0.1:8005:8080"]
+    volumes:
+      - ./config/cluster.json:/etc/raftgo/cluster.json:ro
+      - node5-data:/data
+    restart: unless-stopped
+    stop_grace_period: 15s
+volumes:
+  node1-data:
+  node2-data:
+  node3-data:
+  node4-data:
+  node5-data:
