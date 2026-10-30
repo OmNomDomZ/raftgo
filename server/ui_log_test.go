@@ -28,16 +28,17 @@ func TestLogUIFixedForwarding(t *testing.T) {
 	}))
 	defer leader.Close()
 	var location atomic.Value
-	location.Store(leader.URL + "/entries")
+	location.Store("http://public-leader.invalid/entries")
 	follower := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Location", location.Load().(string))
 		w.WriteHeader(307)
 	}))
 	defer follower.Close()
-	members := []Member{{ID: "local"}, {ID: "leader", APIURL: leader.URL}, {ID: "follower", APIURL: follower.URL}}
+	members := []Member{{ID: "local"}, {ID: "leader", APIURL: "http://public-leader.invalid", InternalAPIURL: leader.URL}, {ID: "follower", APIURL: "http://public-follower.invalid", InternalAPIURL: follower.URL}}
 	h := electionAPI(t, members).Handler()
 	// Handler targets are a snapshot, not caller-controlled data.
 	members[1].APIURL = outsider.URL
+	members[1].InternalAPIURL = outsider.URL
 	request := func(method, path string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
 		r := httptest.NewRequest(method, path, strings.NewReader(`{"command":"<b>"}`))
@@ -53,7 +54,11 @@ func TestLogUIFixedForwarding(t *testing.T) {
 	if w = request("POST", "/cluster/entries/follower"); w.Code != 503 {
 		t.Fatal(w.Code)
 	}
-	location.Store(follower.URL + "/entries")
+	location.Store(leader.URL + "/entries")
+	if w = request("POST", "/cluster/entries/follower"); w.Code != 503 {
+		t.Fatal("accepted a Location other than the configured public endpoint", w.Code)
+	}
+	location.Store("http://public-follower.invalid/entries")
 	if w = request("POST", "/cluster/entries/follower"); w.Code != 503 {
 		t.Fatal(w.Code)
 	}

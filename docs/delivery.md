@@ -1246,3 +1246,19 @@ gofmt -l . — вывод пуст. Go 1.27.3, go.mod 1.27.1 сохранён, l
 race: kv 1.007s, raft 8.216s, server 7.525s, storage 1.017s.
 Python py_compile и git diff --check — exit=0. Приёмка снимка продолжается;
 lab2 ещё не создана. Итоговые SHA и проверки будут записаны после DEMO.
+
+Первый кандидат `snapshot/lab2` на `00c25c761703dd210325b7e349d5fb27b16309c3`
+прошёл Go-набор и Docker task1–2, но не принят: настоящий браузер обнаружил,
+что Docker UI пытается опрашивать/пересылать на host localhost из контейнера.
+Стенд остановлен, checkout возвращён в main для исправления.
+
+В main исправлена адресация: необязательный `Member.InternalAPIURL` /
+`internal_api_url` для серверных запросов UI, fallback на APIURL; APIURL и
+HTTP 307 остаются публичными. Оба Docker-конфига задают `http://nodeN:8080`
+внутри, прежние публичные адреса сохранены. Агрегат и log UI используют
+внутренний адрес; разрешённый публичный Location точно сопоставляется с
+настроенным внутренним адресом без произвольного proxy. Проверки валидности
+URL, неизменяемого состава, отдельной внешней/внутренней адресации,
+запрета постороннего Location, циклов и потери ответа сохранены/расширены.
+Изменены server/config.go, config_test.go, ui.go, ui_log.go, ui_log_test.go,
+ui_test.go, config/cluster.json, scenarios/cluster.json, docs/api.md и demo2.md.

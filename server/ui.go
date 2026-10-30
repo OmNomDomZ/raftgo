@@ -62,7 +62,7 @@ func (a *API) electionUI(mux *http.ServeMux) {
 				if m.ID == a.Node.Status().ID {
 					status = a.Node.Status().Election()
 				} else {
-					req, err := http.NewRequestWithContext(ctx, http.MethodGet, m.APIURL+"/status", nil)
+					req, err := http.NewRequestWithContext(ctx, http.MethodGet, m.apiEndpoint()+"/status", nil)
 					if err != nil {
 						return
 					}

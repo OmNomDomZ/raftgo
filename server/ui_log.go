@@ -10,12 +10,14 @@ import (
 	"raftgo/raft"
 )
 
-// logUI exposes only configured public endpoints. It never accepts a URL or
+// logUI exposes only configured member API endpoints. It never accepts a URL or
 // forwards credentials, cookies, arbitrary paths, or environment proxies.
 func (a *API) logUI(mux *http.ServeMux, localStatus http.HandlerFunc) {
 	members := make(map[string]string, len(a.Members))
+	redirects := make(map[string]string, len(a.Members))
 	for _, m := range a.Members {
-		members[string(m.ID)] = m.APIURL
+		members[string(m.ID)] = m.apiEndpoint()
+		redirects[m.APIURL+"/entries"] = m.apiEndpoint() + "/entries"
 	}
 	client := &http.Client{
 		Transport:     &http.Transport{MaxIdleConnsPerHost: 2, IdleConnTimeout: 30 * time.Second},
@@ -98,20 +100,14 @@ func (a *API) logUI(mux *http.ServeMux, localStatus http.HandlerFunc) {
 			}
 			location := resp.Header.Get("Location")
 			resp.Body.Close()
-			allowed := false
-			for _, endpoint := range members {
-				if location == endpoint+"/entries" {
-					allowed = true
-					break
-				}
-			}
+			endpoint, allowed := redirects[location]
 			if !allowed {
 				problem(w, 503, "leader is not a configured member")
 				return
 			}
 			// Only an explicit 307 (the node rejected this write as follower) permits
 			// forwarding. No discovery-and-retry after 503, 504, or a network failure.
-			target = location
+			target = endpoint
 		}
 		problem(w, 503, "leader redirect cycle")
 	})
