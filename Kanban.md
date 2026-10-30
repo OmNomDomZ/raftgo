@@ -4,7 +4,6 @@ kanban-plugin: board
 
 ## К выполнению
 
-- [ ] [[docs/tasks#S2-DEMO — Сдача реплицированных строк|S2-DEMO — Сдача реплицированных строк]]
 - [ ] [[docs/tasks#S3-CORE — KV CRUD и безопасные чтения|S3-CORE — KV CRUD и безопасные чтения]]
 - [ ] [[docs/tasks#S3-API — HTTP CRUD строк|S3-API — HTTP CRUD строк]]
 - [ ] [[docs/tasks#S3-UI — Форма CRUD|S3-UI — Форма CRUD]]
@@ -17,6 +16,7 @@ kanban-plugin: board
 
 ## В работе
 
+- [ ] [[docs/tasks#S2-DEMO — Сдача реплицированных строк|S2-DEMO — Сдача реплицированных строк]]
 
 
 

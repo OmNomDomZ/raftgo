@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parent
 COMPOSE = ['docker', 'compose', '-p', 'raftgo-scenarios', '-f', str(ROOT / 'compose.yaml')]
 NODES = [f'node{i}' for i in range(1, 6)]
 PAUSED = set()
+DISCONNECTED = {}
 BASE = {n: f'http://127.0.0.1:{18000 + i}' for i, n in enumerate(NODES, 1)}
 
 
@@ -38,6 +39,32 @@ def compose(*args):
     subprocess.run(COMPOSE + list(args), check=True, timeout=45)
     if args[0] == 'unpause':
         PAUSED.difference_update(args[1:] or NODES)
+
+
+def disconnect(node):
+    # Pausing alone queues TCP data: on resume it can deliver the orphan before
+    # elections. Detach three paused replicas before proposing the tail instead.
+    container = subprocess.check_output(COMPOSE + ['ps', '-q', node], text=True, timeout=15).strip()
+    details = json.loads(subprocess.check_output(['docker', 'inspect', container], text=True, timeout=15))[0]
+    networks = details['NetworkSettings']['Networks']
+    check(len(networks) == 1, f'Expected one scenario network for {node}')
+    network, endpoint = next(iter(networks.items()))
+    check(network == 'raftgo-scenarios_default', f'Unexpected network: {network}')
+    DISCONNECTED[node] = (container, network, endpoint['IPAddress'], endpoint['Aliases'])
+    subprocess.run(['docker', 'network', 'disconnect', network, container], check=True, timeout=15)
+    print(f'  Network isolated: {node}', flush=True)
+
+
+def reconnect(node):
+    container, network, address, aliases = DISCONNECTED[node]
+    networks = json.loads(subprocess.check_output(['docker', 'inspect', container], text=True, timeout=15))[0]['NetworkSettings']['Networks']
+    if network not in networks:
+        command = ['docker', 'network', 'connect', '--ip', address]
+        for alias in aliases or []:
+            command += ['--alias', alias]
+        subprocess.run(command + [network, container], check=True, timeout=15)
+    del DISCONNECTED[node]
+    print(f'  Network restored: {node}', flush=True)
 
 
 def request(node, method, path, data=None, token=None, expected=None, timeout=8):
@@ -192,6 +219,51 @@ def task2():
     compose('unpause', *paused)
     leader()
 
+    step('2.5 Conflicting uncommitted tail is replaced after leader change')
+    current = leader()
+    # Freeze all followers before proposing: only the old leader has the tail.
+    # Do not restart any process; term, vote and log remain in RAM.
+    def committed_baseline():
+        entries = request(current, 'GET', '/log')[1]['entries']
+        return entries if entries and all(e['committed'] for e in entries) else None
+    saved = eventually(committed_baseline)
+    others = [n for n in NODES if n != current]
+    compose('pause', *others)
+    majority = others[:3]
+    for n in majority:
+        disconnect(n)
+    orphan = command + '-orphan'
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(request, current, 'POST', '/entries', {'command': orphan}, timeout=40)
+        try:
+            def tail_visible():
+                entries = request(current, 'GET', '/status', timeout=0.7)[1]['entries']
+                return next((e for e in entries if e['command'] == orphan and not e['committed']), None)
+            tail = eventually(tail_visible, timeout=3)
+            print(f"  Old leader {current}: uncommitted index={tail['index']} term={tail['term']}", flush=True)
+            compose('pause', current)
+            for n in majority:
+                reconnect(n)
+            compose('unpause', *majority)
+            new = leader(majority)
+            _, replacement, _ = request(new, 'POST', '/entries', {'command': command + '-replacement'}, expected=201)
+            check(replacement['term'] > tail['term'], 'Replacement must belong to a newer term')
+            logs_match(replacement['index'], majority, expected_prefix=saved)
+        finally:
+            # Also release the suspended request handler if setup/checks fail.
+            cleanup()
+        code, body, _ = pending.result(timeout=40)
+        check(code in (409, 504), f'Orphan acknowledged: {code} {body}')
+        print(f'  Old request -> {code}; never success', flush=True)
+    leader()
+    logs_match(replacement['index'], expected_prefix=saved)
+    for n in NODES:
+        entries = request(n, 'GET', '/status')[1]['entries']
+        check(all(e['command'] != orphan for e in entries), f'Orphan remains on {n}')
+        repaired = entries[tail['index'] - 1]
+        check(repaired['term'] > tail['term'] and repaired['committed'], f'Tail not replaced on {n}')
+    print('  Conflicting tail removed on all five replicas; committed prefix preserved', flush=True)
+
 
 def task3():
     step('3.1 CRUD without locks, duplicate create and missing key')
@@ -287,10 +359,15 @@ def task4():
 
 
 def cleanup():
+    errors = []
+    for node in list(DISCONNECTED):
+        try:
+            reconnect(node)
+        except (subprocess.SubprocessError, OSError) as err:
+            errors.append(f'network {node}: {err}')
     # Query Docker, not just PAUSED: a failed pause may have completed partially.
     result = subprocess.run(COMPOSE + ['ps', '--status', 'paused', '--services'],
                             check=True, capture_output=True, text=True, timeout=15)
-    errors = []
     for node in result.stdout.split():
         if node not in NODES:
             continue
@@ -299,7 +376,7 @@ def cleanup():
         except (subprocess.SubprocessError, OSError) as err:
             errors.append(f'{node}: {err}')
     if errors:
-        raise RuntimeError('Unpause failed: ' + '; '.join(errors))
+        raise RuntimeError('Cleanup failed: ' + '; '.join(errors))
 
 
 def diagnostics():
