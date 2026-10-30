@@ -68,7 +68,7 @@ func TestStringWriteWaitsForOwnAppliedPair(t *testing.T) {
 				done := make(chan struct{})
 				go func() {
 					defer close(done)
-					api.appendEntry(w, httptest.NewRequest("POST", "/entries", strings.NewReader(`{"command":"строка"}`)))
+					api.Handler().ServeHTTP(w, httptest.NewRequest("POST", "/entries", strings.NewReader(`{"command":"строка"}`)))
 				}()
 				synctest.Wait()
 				s, log := node.InspectLog()

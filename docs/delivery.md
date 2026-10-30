@@ -1026,3 +1026,89 @@ S2-CORE готова, обязательные проверки доступны
 не переключались, push и другие агенты не запускались. Docker и ручной UI
 относятся к приёмке этапа S2-DEMO и здесь не запускались. Следующий доступный
 ID — S2-API; он не выполнялся. Препятствий к сдаче S2-CORE нет.
+
+## S2-API — add и лог на эндпоинте состояния (2026-10-31)
+
+Ветка `main`, база `afa3f9d99c669c7a55e5a0395b6da80ffd510083`, checkout
+`/home/bogdan/rafting`. Зависимость S2-CORE готова. До изменений карточка
+перенесена в «В работе», после всех проверок — в «Готово».
+
+Поведение и файлы:
+
+- `server/http.go`: `/status` и `/election` возвращают node/members,
+  consistency=local и entries; node и entries формируются одним InspectLog.
+  `/log` сохраняет прежние поля без members. Видны committed, хвост, no-op
+  и пустая пользовательская строка. До JSON-декодирования `/entries`
+  отклоняет неверный UTF-8: encoding/json иначе заменял бы байты на U+FFFD.
+  Сохранены лимит 65536 декодированных байт, внутренний KV-префикс, ожидание
+  apply своей пары index/term и отсутствие повторного Start при ошибке.
+- `server/ui.go`: необходимая совместимость существующего экрана выборов с
+  выросшим `/status`. Node сериализуется перед логом; агрегат читает только
+  JSON-префикс до конца node, максимум 64 КиБ, с прежними таймаутами и
+  фиксированными адресами. Неиспользованный остаток с логом не валидируется.
+  Это сохраняет ограничение памяти опроса и не помечает узел недоступным
+  из-за допустимой команды размером 64 КиБ. Панель add/log не добавлялась.
+- `server/http_entries_test.go`: реальные Raft/Memory, fake-транспорт и
+  виртуальное время. Проверены пустая строка, Unicode и экранирование,
+  одинаковые строки на разных индексах, ASCII/Unicode ровно 65536 байт,
+  максимально экранированная строка, превышение на байт, неверный UTF-8,
+  JSON/типы/null/лишние поля/два объекта/слишком большое тело и KV-префикс.
+  Проверены 307 без пересылки, 503 без известного лидера, 504 с index/term,
+  одна запись после таймаута и её последующий commit без нового POST,
+  локальный хвост и no-op. Через httptest проверен агрегат с реальным
+  сериализованным статусом больше 64 КиБ и валидация ограниченного префикса.
+- `server/http_election_test.go`: полный envelope, local consistency,
+  entries=[] для пустого лога и согласованность last_log_index/entries
+  при всех проверяемых ролях. Alias и семантика голосов сохранены.
+- `server/string_apply_test.go`: существующие проверки ожидания consumer
+  и 409 при применении другого term на том же индексе теперь вызывают
+  публичный HTTP Handler, а не метод appendEntry напрямую.
+- `README.md`, `docs/api.md`: обновлены контракт снимка, лимиты, ошибки,
+  применение index/term, неизвестный исход и правила опроса агрегатом.
+- `Kanban.md`, `docs/delivery.md`: статус и этот журнал.
+
+Среда: `go version go1.27.3-X:nodwarf5 linux/amd64`. Версия go.mod сохранена;
+`.golangci.yml` отсутствует, использован go vet. Финальные реальные результаты:
+
+```text
+$ go build ./...
+exit=0 (вывод пуст)
+
+$ go test -count=1 ./...
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv       0.007s
+ok  raftgo/raft     1.162s
+ok  raftgo/server   6.427s
+ok  raftgo/storage  0.003s
+?   raftgo/transport [no test files]
+exit=0
+
+$ go test -race -count=1 ./...
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv       1.009s
+ok  raftgo/raft     6.425s
+ok  raftgo/server   7.531s
+ok  raftgo/storage  1.014s
+?   raftgo/transport [no test files]
+exit=0
+
+$ go vet ./...
+exit=0 (вывод пуст)
+
+$ gofmt -l .
+exit=0 (вывод пуст)
+
+$ git diff --check
+exit=0 (вывод пуст)
+
+$ go test ./server -run 'TestHTTPEntries|TestHTTPLogSnapshot|TestClusterStatusWithLarge|TestElectionNode|TestStringWriteWaits|TestHTTPElection' -count=100
+ok  raftgo/server 1.647s
+exit=0
+```
+
+S2-API готова, препятствий нет. Полный KV/CAS/lock main сохранён; код raft
+не менялся. Docker и ручной браузер не запускались: это API-карточка,
+приёмка этапа выполняется в S2-DEMO, ручная форма — в S2-UI. Снимки lab1–lab4,
+контроллер и его состояние не менялись. Ветки, checkout и история не
+переключались и не переписывались; другие агенты и push не запускались.
+Следующий доступный ID — S2-UI; он не выполнялся.

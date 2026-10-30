@@ -74,15 +74,13 @@ func (a *API) electionUI(mux *http.ServeMux) {
 					if resp.StatusCode != http.StatusOK {
 						return
 					}
-					var body struct {
-						Node *raft.ElectionStatus `json:"node"`
-					}
-					// Bound memory even if a configured peer sends an oversized response.
-					data, err := io.ReadAll(io.LimitReader(resp.Body, (64<<10)+1))
-					if err != nil || len(data) > 64<<10 || json.Unmarshal(data, &body) != nil || body.Node == nil || body.Node.ID != m.ID {
+					// /status writes node before its unbounded entries array. Read
+					// only the election projection, with a bounded prefix and timeout.
+					observed, ok := readElectionNode(resp.Body)
+					if !ok || observed.ID != m.ID {
 						return
 					}
-					status = *body.Node
+					status = *observed
 				}
 				now := time.Now().UTC()
 				out[i] = memberObservation{ID: m.ID, Available: true, ObservedAt: &now, Node: &status}
@@ -95,4 +93,30 @@ func (a *API) electionUI(mux *http.ServeMux) {
 			Members []memberObservation `json:"members"`
 		}{false, out})
 	})
+}
+
+// readElectionNode validates the JSON prefix through node, not the unused log.
+func readElectionNode(r io.Reader) (*raft.ElectionStatus, bool) {
+	d := json.NewDecoder(io.LimitReader(r, 64<<10))
+	if token, err := d.Token(); err != nil || token != json.Delim('{') {
+		return nil, false
+	}
+	for d.More() {
+		key, err := d.Token()
+		if err != nil {
+			return nil, false
+		}
+		if key == "node" {
+			var node *raft.ElectionStatus
+			if err := d.Decode(&node); err != nil || node == nil {
+				return nil, false
+			}
+			return node, true
+		}
+		var ignored json.RawMessage
+		if err := d.Decode(&ignored); err != nil {
+			return nil, false
+		}
+	}
+	return nil, false
 }

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"raftgo/raft"
 )
@@ -86,11 +88,6 @@ func (a *API) Handler() http.Handler {
 	mux := http.NewServeMux()
 	a.electionUI(mux)
 	status := func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, 200, map[string]any{"node": a.Node.Status(), "members": a.Members})
-	}
-	mux.HandleFunc("GET /status", status)
-	mux.HandleFunc("GET /election", status)
-	mux.HandleFunc("GET /log", func(w http.ResponseWriter, r *http.Request) {
 		s, entries := a.Node.InspectLog()
 		type entry struct {
 			Index     raft.Index `json:"index"`
@@ -108,8 +105,26 @@ func (a *API) Handler() http.Handler {
 			index := raft.Index(i + 1)
 			out[i] = entry{index, e.Term, kind, string(e.Command), index <= s.CommitIndex}
 		}
-		writeJSON(w, 200, map[string]any{"node": s, "consistency": "local", "entries": out})
-	})
+		// Put node first: election observers can read their bounded projection
+		// without downloading an ever-growing diagnostic log.
+		if r.URL.Path == "/log" {
+			writeJSON(w, 200, struct {
+				Node        raft.Status `json:"node"`
+				Consistency string      `json:"consistency"`
+				Entries     []entry     `json:"entries"`
+			}{s, "local", out})
+			return
+		}
+		writeJSON(w, 200, struct {
+			Node        raft.Status `json:"node"`
+			Members     []Member    `json:"members"`
+			Consistency string      `json:"consistency"`
+			Entries     []entry     `json:"entries"`
+		}{s, a.Members, "local", out})
+	}
+	mux.HandleFunc("GET /status", status)
+	mux.HandleFunc("GET /election", status)
+	mux.HandleFunc("GET /log", status)
 	mux.HandleFunc("POST /entries", a.appendEntry)
 	for _, pattern := range []string{"GET /kv/{key}", "POST /kv/{key}", "PUT /kv/{key}", "DELETE /kv/{key}", "POST /kv/{key}/cas", "POST /kv/{key}/lock", "DELETE /kv/{key}/lock"} {
 		mux.HandleFunc(pattern, a.kvRequest)
@@ -133,6 +148,14 @@ func (a *API) failure(w http.ResponseWriter, r *http.Request, err error) {
 	problem(w, 503, err.Error())
 }
 func (a *API) appendEntry(w http.ResponseWriter, r *http.Request) {
+	// encoding/json replaces invalid UTF-8 with U+FFFD. Reject it before
+	// decoding so the replicated string cannot silently differ from the input.
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 6*MaxCommandBytes+128))
+	if err != nil || !utf8.Valid(raw) {
+		problem(w, 400, "expected UTF-8 JSON within request size limit")
+		return
+	}
+	r.Body = io.NopCloser(bytes.NewReader(raw))
 	var body struct {
 		Command *string `json:"command"`
 	}

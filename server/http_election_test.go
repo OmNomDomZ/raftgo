@@ -77,8 +77,16 @@ func TestHTTPElectionRolesAndVotes(t *testing.T) {
 				if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
 					t.Fatal(err)
 				}
-				if len(raw) != 2 {
+				if len(raw) != 4 {
 					t.Fatalf("unexpected envelope: %s", w.Body.String())
+				}
+				var entries []json.RawMessage
+				var consistency string
+				if err := json.Unmarshal(raw["entries"], &entries); err != nil || string(raw["entries"]) == "null" || len(entries) != int(got.Node.LastLogIndex) {
+					t.Fatalf("entries disagree with node: %s", w.Body.String())
+				}
+				if err := json.Unmarshal(raw["consistency"], &consistency); err != nil || consistency != "local" {
+					t.Fatalf("missing local consistency: %s", w.Body.String())
 				}
 				var fields map[string]json.RawMessage
 				if err := json.Unmarshal(raw["node"], &fields); err != nil {
