@@ -24,7 +24,7 @@ func electionAPI(t *testing.T, members []Member) *API {
 
 func TestElectionUIRouting(t *testing.T) {
 	h := electionAPI(t, nil).Handler()
-	for path, content := range map[string]string{"/": "ЭТАП 1", "/ui/election.js": "textContent", "/ui/election.css": "#nodes"} {
+	for path, content := range map[string]string{"/": "ЭТАП 2", "/ui/election.js": "textContent", "/ui/election.css": "#nodes"} {
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
 		if w.Code != 200 || !strings.Contains(w.Body.String(), content) || w.Header().Get("Content-Security-Policy") == "" {

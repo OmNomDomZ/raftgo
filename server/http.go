@@ -122,6 +122,7 @@ func (a *API) Handler() http.Handler {
 			Entries     []entry     `json:"entries"`
 		}{s, a.Members, "local", out})
 	}
+	a.logUI(mux, status)
 	mux.HandleFunc("GET /status", status)
 	mux.HandleFunc("GET /election", status)
 	mux.HandleFunc("GET /log", status)

@@ -1,10 +1,20 @@
 <!doctype html>
 <html lang="ru">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Raft · Выборы</title><link rel="stylesheet" href="/ui/election.css"><script src="/ui/election.js" defer></script></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Raft · Строковый лог</title><link rel="stylesheet" href="/ui/election.css"><script src="/ui/election.js" defer></script></head>
 <body><main>
-<header><span class="eyebrow">RAFTGO / ЭТАП 1</span><h1>Выборы лидера</h1><p>Пять узлов · кворум 3 · безопасная память</p></header>
+<header><span class="eyebrow">RAFTGO / ЭТАП 2</span><h1>Выборы и репликация строк</h1><p>Пять узлов · кворум 3 · безопасная память</p></header>
 <section class="notice"><strong>Независимые локальные наблюдения</strong><p>Опрос неатомарный: узлы отвечают в разное время. Роль Leader не доказывает наличие кворума. Доступность HTTP не означает доступность RPC.</p></section>
 <div class="toolbar"><p id="poll" role="status">Загрузка состава…</p><button id="refresh" type="button">Обновить</button></div>
 <section id="nodes" aria-label="Узлы кластера"></section>
+<section class="log-panel" aria-labelledby="log-title">
+<h2 id="log-title">Строковый лог</h2>
+<p>Локальные снимки реплик могут отставать. Подтверждённые записи входят в committed-префикс; неподтверждённый хвост может измениться. No-op — служебная запись, не пустая строка.</p>
+<label for="member">Узел для просмотра и отправки</label> <select id="member"></select>
+<form id="add"><label for="command">Строка (до 64 КиБ UTF-8, пустая допустима)</label><textarea id="command" rows="3"></textarea><button id="submit" type="submit">Добавить строку</button></form>
+<p id="result" role="status">Результат записи появится после ответа API.</p>
+<p>504 или потеря ответа означают неизвестный исход, а не откат. Автоповтора нет; повторное нажатие может добавить дубликат.</p>
+<p id="log-status" role="status">Выберите узел…</p>
+<div class="log-scroll"><table><thead><tr><th>Index</th><th>Term</th><th>Вид</th><th>Подтверждение</th><th>Строка</th></tr></thead><tbody id="entries"></tbody></table></div>
+</section>
 <footer><p>Автообновление каждую секунду после ответа. Через 3 секунды без успешного опроса данные устаревают.</p><p>«Голос» — voted_for только текущего term; «Голоса кандидата» — votes только в роли Candidate, включая себя. История голосов неизвестна.</p><p>Для отказов используйте pause/unpause или сетевую изоляцию. Завершение процесса теряет память; stop/start не восстанавливает прежний узел.</p></footer>
 </main></body></html>

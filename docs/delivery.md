@@ -1112,3 +1112,110 @@ S2-API готова, препятствий нет. Полный KV/CAS/lock mai
 контроллер и его состояние не менялись. Ветки, checkout и история не
 переключались и не переписывались; другие агенты и push не запускались.
 Следующий доступный ID — S2-UI; он не выполнялся.
+
+## S2-UI — добавление строки и наблюдение реплик (2026-10-31)
+
+Ветка `main`, база `5705f58243c6be46c466aaf45cb5dadc4615c4fc`, чистый
+существующий checkout `/home/bogdan/rafting`; зависимость S2-API готова.
+Карточка переведена «В работе», после нижеследующих проверок — «Готово».
+
+Изменённые файлы и поведение:
+
+- `server/ui/{index.html,election.js,election.css}`: экран этапа 2 сохраняет
+  диагностику выборов и добавляет выбор реплики, локальный лог и форму строки.
+  Index/term, committed/неподтверждённый хвост и служебный no-op различимы.
+  Пустая команда видна как `""`; HTML и Unicode отображаются текстом.
+  Успех показывается только после 201 с index/term; 504 и потеря ответа явно
+  означают неизвестный исход. Автоповтора нет, двойная отправка во время
+  ожидания заблокирована, строка сохраняется. Лог имеет отдельный опрос,
+  время последнего успеха и отметку устаревания; снимки локальны.
+- `server/ui_log.go`, подключение в `server/http.go`: GET /cluster/log/{id}
+  и POST /cluster/entries/{id} только для фиксированного состава Handler.
+  Чтение имеет дедлайн 600 мс, запись — 8 секунд, без proxy окружения и
+  переноса cookies/произвольных заголовков/путей. Только явный 307 на точный
+  настроенный api_url/entries разрешает пересылку; циклы запрещены, после
+  503/504/сетевой ошибки повтора нет. Исходные /entries и 307 не менялись.
+- `server/ui_log_test.go`: фиксированные адреса при мутации исходного состава,
+  query/посторонний redirect/цикл, методы и неизвестный ID, локальный и
+  удалённый лог, сохранение 504 index/term, потерянный ответ без повтора.
+  `server/ui_test.go`: номер этапа встроенного экрана.
+- `README.md`, `docs/api.md`: форма, маршруты, таймауты и неизвестный исход;
+  `Kanban.md`, `docs/delivery.md`: статус и этот журнал.
+
+Go `go1.27.3-X:nodwarf5 linux/amd64`; go.mod сохранён, `.golangci.yml`
+отсутствует. Реальный успешный вывод обязательного прогона:
+
+```text
+$ go build ./...
+exit=0 (вывод пуст)
+
+$ go test -count=1 ./...
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv       0.002s
+ok  raftgo/raft     0.903s
+ok  raftgo/server   6.403s
+ok  raftgo/storage  0.002s
+?   raftgo/transport [no test files]
+exit=0
+
+$ go test -race -count=1 ./...
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv       1.006s
+ok  raftgo/raft     6.255s
+ok  raftgo/server   7.461s
+ok  raftgo/storage  1.016s
+?   raftgo/transport [no test files]
+exit=0
+
+$ go vet ./...
+exit=0 (вывод пуст)
+
+$ gofmt -l .
+exit=0 (вывод пуст)
+
+$ git diff --check
+exit=0 (вывод пуст)
+
+$ go test ./server -run 'TestLogUI|TestElectionUI' -count=1 -v
+PASS TestLogUIFixedForwarding
+PASS TestLogUILostWriteResponseIsNotRetried
+PASS TestElectionUIRouting
+ok  raftgo/server 0.005s
+exit=0
+
+$ go test ./server -run 'TestLogUI' -count=100
+ok  raftgo/server 0.141s
+exit=0
+```
+
+Ручной браузерный прогон: настоящий Firefox 158 на X11, Marionette,
+пять отдельных процессов из `/tmp/raftgo-s2-ui-node`, собранного из этого
+checkout. Случайные localhost API/RPC-порты, конфиги и логи в
+`/tmp/raftgo-s2-ui-live-*`, harness `/tmp/raftgo-s2-ui-browser.py`.
+Отказы — SIGSTOP/SIGCONT, PID и память сохранялись. Визуально просмотрены
+снимки normal/tail/no-quorum/mobile в `/tmp/raftgo-s2-ui-*.png`.
+Реальные результаты `/tmp/raftgo-s2-ui-browser.log` (exit=0):
+
+```text
+PASS follower origin: repeated/empty/HTML/Unicode strings; five replicas; 201 index/term; no-op distinct; HTML literal
+PASS all five replica logs selectable via same origin
+PASS pause leader node2 -> node4; write through follower succeeds
+PASS no majority: real 504 index/term, unknown outcome; visible uncommitted tail; one POST, no retry; no live leader
+PASS no leader: 503 shown without retry
+PASS unpause/recovery; all browser requests same origin; narrow screen without page overflow
+PASS cleanup: test browser closed; five processes resumed, exited and reaped
+```
+
+Для настоящего 504 три follower были приостановлены, запись принята лидером
+до check-quorum и осталась неподтверждённой. В браузере виден её хвост, затем
+HTTP 504 index=9/term=2, явное сообщение неизвестного исхода; счётчик fetch
+подтвердил ровно один POST, включая последующие опросы. После unpause
+кластер снова работал. Повторяющиеся, пустые, HTML и Unicode строки добавлялись
+через follower и проверены на всех пяти репликах; DOM не содержал внедрённых
+img/script, JS-маркер не исполнялся. Все browser resource URL одного origin.
+
+Все критерии S2-UI выполнены; ограничений нет. Docker-сценарии и выделение
+lab2 относятся к следующей S2-DEMO и здесь не запускались. Полный core/KV/CAS/
+lock main сохранён, lab1–lab4, контроллер и его состояние не изменялись.
+Другие карточки, агенты, ветки/worktree/копии, переключение checkout и push
+не запускались. Следующий доступный ID — S2-DEMO.

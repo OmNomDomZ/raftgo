@@ -3,6 +3,13 @@ const nodes = document.getElementById('nodes');
 const poll = document.getElementById('poll');
 const refresh = document.getElementById('refresh');
 const observations = new Map();
+const member = document.getElementById('member');
+const logStatus = document.getElementById('log-status');
+const entries = document.getElementById('entries');
+const result = document.getElementById('result');
+const logs = new Map();
+let logBusy = false;
+let writing = false;
 let busy = false;
 let lastPoll = 0;
 let pollFailed = false;
@@ -35,6 +42,12 @@ function render() {
     cards.push(card);
   }
   nodes.replaceChildren(...cards);
+  for (const id of observations.keys()) {
+    if (![...member.options].some(option => option.value === id)) {
+      const option = element('option', id); option.value = id; member.append(option);
+    }
+  }
+  renderLog();
   poll.textContent = pollFailed ? 'Опрос недоступен. Последние данные могут устареть.' : lastPoll ? 'Неатомарный опрос · ' + new Date(lastPoll).toLocaleTimeString() : 'Загрузка состава…';
 }
 async function update() {
@@ -65,3 +78,60 @@ setInterval(render, 500);
 // Schedule after completion so a slow request cannot overlap the next poll.
 async function loop() { await update(); setTimeout(loop, 1000); }
 loop();
+
+function renderLog() {
+  const snapshot = logs.get(member.value);
+  const stale = !snapshot || !snapshot.available || Date.now() - snapshot.received > 3000;
+  logStatus.textContent = snapshot ? (stale ? 'Данные устарели · ' : 'Свежий локальный снимок · ') +
+    member.value + ' · commit_index ' + snapshot.node.commit_index + ' · last_log_index ' + snapshot.node.last_log_index +
+    ' · последний успех ' + new Date(snapshot.received).toLocaleTimeString() : 'Успешного снимка ещё нет';
+  const rows = (snapshot?.entries || []).map(entry => {
+    const row = element('tr', '', entry.committed ? 'committed' : 'tail');
+    for (const value of [entry.index, entry.term, entry.kind === 'noop' ? 'no-op (служебная)' : 'command',
+      entry.committed ? 'committed' : 'неподтверждённый хвост', entry.kind === 'noop' ? '—' : JSON.stringify(entry.command)]) {
+      row.append(element('td', String(value)));
+    }
+    return row;
+  });
+  entries.replaceChildren(...rows);
+}
+async function updateLog() {
+  const id = member.value;
+  if (!id || logBusy) return;
+  logBusy = true;
+  try {
+    const response = await fetch('/cluster/log/' + encodeURIComponent(id), {cache: 'no-store', signal: AbortSignal.timeout(2000)});
+    if (!response.ok) throw new Error('log');
+    const data = await response.json();
+    if (data.node?.id !== id || data.consistency !== 'local' || !Array.isArray(data.entries)) throw new Error('schema');
+    logs.set(id, {...data, available: true, received: Date.now()});
+  } catch (_) {
+    if (logs.has(id)) logs.get(id).available = false;
+  } finally { logBusy = false; renderLog(); }
+}
+member.addEventListener('change', () => { renderLog(); updateLog(); });
+refresh.addEventListener('click', updateLog);
+async function logLoop() { await updateLog(); setTimeout(logLoop, 1000); }
+logLoop();
+document.getElementById('add').addEventListener('submit', async event => {
+  event.preventDefault();
+  if (writing || !member.value) return;
+  const command = document.getElementById('command').value;
+  if (new TextEncoder().encode(command).length > 65536) { result.textContent = 'Строка превышает 64 КиБ UTF-8'; return; }
+  writing = true;
+  document.getElementById('submit').disabled = true;
+  result.textContent = 'Ожидание commit/apply…';
+  try {
+    const response = await fetch('/cluster/entries/' + encodeURIComponent(member.value), {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({command}),
+      redirect: 'error', signal: AbortSignal.timeout(9000)
+    });
+    const data = await response.json();
+    const position = data.index !== undefined ? ' · index ' + data.index + ' · term ' + data.term : '';
+    result.textContent = 'HTTP ' + response.status + position + ' · ' +
+      (response.status === 201 ? 'Подтверждено и применено' : response.status === 504 ?
+        'Неизвестный исход. Автоповтора нет; повтор может создать дубликат.' : data.error || 'Ошибка записи');
+  } catch (_) {
+    result.textContent = 'Неизвестный исход: ответ не получен. Автоповтора нет; повтор может создать дубликат.';
+  } finally { writing = false; document.getElementById('submit').disabled = false; updateLog(); }
+});
