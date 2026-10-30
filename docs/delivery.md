@@ -360,3 +360,93 @@ Docker «container is not paused». Cleanup исправлен на опрос �
 не затронут. Исходный checkout не переключался, чужие файлы не коммитились.
 Локальная интеграция результата и этого журнала в `prepare/in-memory` выполняется
 fast-forward, task-ветка сохраняется. Push и изменения main не выполняются.
+
+## S1-CORE — только выборы (2026-10-31)
+
+- Ветка `task/S1-CORE-election-only`, база `prepare/in-memory` на
+  `98ad91d00b3b8c6f48cc1b10d98d8ff50ceaa119` (короткий SHA `98ad91d`);
+  отдельный worktree `/home/bogdan/rafting-s1-core`. Зависимость B2 готова.
+- Проверенный код: `99787d4257c33b5617a371943c303b7a07868906`.
+  Результат локально интегрирован в новую `stage/1-election`; task-ветка
+  сохранена. Stage пока не принят: далее S1-API, S1-UI, S1-DEMO.
+- `raft/`: удалены log/read/apply/replication и их тесты, log-типы и поля
+  Config/Status; изменены raft, run, election, handlers, storage, transport,
+  types, inspect и соответствующие election/cluster/quorum/stepdown/helpers/
+  fakes/raft-тесты. Новый `heartbeat.go` отправляет только term/leader ID,
+  ограничивает один RPC на peer и сохраняет check quorum и отмену RPC.
+  RequestVote сохраняет стандартные нулевые log-поля, ненулевые отклоняются.
+- `storage/memory.go` хранит только term/голос. `memory_test.go` проверяет
+  атомарность пары при конкурентном доступе и реальный restart Raft с тем же
+  Memory: прежний кандидат получает повторный голос, другой и старый term
+  отклоняются. В ядре сохранён failure-injection Storage.
+- `server/http.go`, `http_test.go`, `cmd/raftgo/main.go`: удалены обработчики
+  будущих маршрутов, apply consumer и его wiring; `kv/`, `server/kv.go` и
+  replay-тесты удалены. Тест подтверждает отсутствие будущих маршрутов (404).
+- `scenarios/run.py`, README и task1/README содержат только этап 1;
+  task2–4 удалены. README, docs/onboarding и вводный статус docs/stages
+  соответствуют ветке выборов. Канбан: S1-CORE готова; следующая — S1-API.
+- Сохранены проверки Election Safety на каждом переходе в лидера, split vote,
+  повторы голосов и старые ответы, старшие term, изоляция меньшинства,
+  restart с сохранённым Storage; 20 seed случайных отказов и 100 seed
+  задержек/переупорядочивания RPC. Fake-транспорт и виртуальное время,
+  без Sleep и реальной сети в core-тестах. После изоляции лидер может снова
+  победить в новом term: логовых ограничений голосования на этапе 1 нет.
+
+Фактические проверки: Go `go1.27.3-X:nodwarf5 linux/amd64`, go.mod не менялся.
+`.golangci.yml` отсутствует, выполнен vet. Последний полный прогон:
+
+```text
+$ go build ./...
+exit=0 (вывод пуст)
+
+$ go test -count=1 ./...
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/raft      0.187s
+ok  raftgo/server    0.003s
+ok  raftgo/storage   0.003s
+?   raftgo/transport [no test files]
+exit=0
+
+$ go test -race -count=1 ./...
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/raft      2.048s
+ok  raftgo/server    1.017s
+ok  raftgo/storage   1.018s
+?   raftgo/transport [no test files]
+exit=0
+
+$ go vet ./...
+exit=0 (вывод пуст)
+
+$ gofmt -l .
+exit=0 (вывод пуст)
+
+$ git diff --check
+exit=0 (вывод пуст)
+
+$ python3 -m py_compile scenarios/run.py
+exit=0
+
+$ docker compose -p raftgo-scenarios -f scenarios/compose.yaml up -d --build
+exit=0 (пять контейнеров, Dockerfile собирает Go 1.27.1)
+
+$ python3 scenarios/run.py all
+1.1: все пять узлов согласились о лидере node5, term 1
+1.2: pause node5; новый лидер node4 в старшем term
+1.3: unpause node5; прежний лидер стал follower
+1.4: pause node4/node1/node2; два оставшихся не выбрали лидера за 5 секунд
+unpause всех; кластер выбрал лидера node3
+PASS task1
+exit=0
+
+$ docker compose -p raftgo-scenarios -f scenarios/compose.yaml down
+exit=0 (удалены пять контейнеров и сеть)
+```
+
+Ограничения: UI ещё отсутствует, браузерная проверка не выполнялась; приёмка
+всего этапа — отдельная S1-DEMO после API/UI. Safe Memory сохраняется при
+pause/unpause и повторном использовании объекта Storage; завершение процесса
+теряет RAM. Чужой запущенный Compose-проект `rafting` не затронут. Исходный
+checkout не переключался, чужие изменения не коммитились. В общий журнал
+`prepare/in-memory` перенесены только статус карточки и эта запись; код
+этапа в подготовительную ветку не переносился. Push/main не изменялись.
