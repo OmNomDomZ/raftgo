@@ -39,7 +39,7 @@ class RunnerTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.repo = Path(self.temp.name) / "repo"
         self.repo.mkdir()
-        runner.git(self.repo, "init", "-b", "prepare/in-memory")
+        runner.git(self.repo, "init", "-b", "main")
         runner.git(self.repo, "config", "user.name", "Test")
         runner.git(self.repo, "config", "user.email", "test@example.invalid")
         (self.repo / "docs").mkdir()
@@ -49,12 +49,12 @@ class RunnerTests(unittest.TestCase):
             (self.repo / name).write_text(text)
         runner.git(self.repo, "add", ".")
         runner.git(self.repo, "commit", "-m", "initial")
-        runner.git(self.repo, "branch", "stage/1-election")
-        self.args = argparse.Namespace(repo=str(self.repo), journal_branch="prepare/in-memory",
+        runner.git(self.repo, "branch", "lab1")
+        self.args = argparse.Namespace(repo=str(self.repo), journal_branch="main",
                                        max_tasks=1, sandbox="workspace-write", repair=False,
                                        task_timeout=5, check_timeout=5)
         self.r = runner.Runner(self.args)
-        self.original = runner.git(self.repo, "rev-parse", "stage/1-election")
+        self.original = runner.git(self.repo, "rev-parse", "lab1")
 
     def prepare_result(self):
         self.r.start(self.r.select())
@@ -106,26 +106,54 @@ class RunnerTests(unittest.TestCase):
             return 1 if "-race" in command else 0
         with patch.object(runner, "execute", checks), self.assertRaises(runner.Stop):
             self.r.run(True)
-        self.assertEqual(runner.git(self.repo, "rev-parse", "stage/1-election"), self.original)
-        self.assertEqual(runner.board((self.repo / "Kanban.md").read_text())["S1-API"], "К выполнению")
+        self.assertEqual(runner.git(self.repo, "rev-parse", "lab1"), self.original)
+        self.assertEqual(self.r.state["phase"], "verify")
 
-    def test_integration_and_journal_are_idempotent(self):
+    def test_checks_complete_in_place_without_changing_snapshots(self):
         sha = self.prepare_result()
         with patch.object(runner, "execute", self.pass_check):
             self.r.run(True)
-        self.assertEqual(runner.git(self.repo, "rev-parse", "stage/1-election"), sha)
-        self.assertEqual(runner.board((self.repo / "Kanban.md").read_text())["S1-API"], "Готово")
+        self.assertEqual(runner.git(self.repo, "rev-parse", "main"), sha)
+        self.assertEqual(runner.git(self.repo, "rev-parse", "lab1"), self.original)
         self.r.finish()
-        text = (self.repo / "docs/delivery.md").read_text()
-        self.assertEqual(text.count(f"autokanban:S1-API:{sha}"), 1)
+        self.assertEqual(self.r.state["phase"], "completed")
         self.assertEqual(self.r.select()[0], "S1-UI")
+        self.assertEqual(Path(self.r.state["worker"]), self.repo)
+        self.assertEqual(len(runner.git(self.repo, "worktree", "list").splitlines()), 1)
+        self.assertFalse(list(self.r.root.rglob("worktree")))
 
-    def test_moved_target_is_not_overwritten(self):
-        self.prepare_result()
-        runner.git(self.repo, "update-ref", "refs/heads/stage/1-election",
-                   runner.git(self.r.state["worker"], "rev-parse", "HEAD~1"))
-        with patch.object(runner, "execute", self.pass_check), self.assertRaisesRegex(runner.Stop, "изменилась"):
+    def test_moved_snapshot_is_detected(self):
+        sha = self.prepare_result()
+        runner.git(self.repo, "update-ref", "refs/heads/lab1", sha)
+        with patch.object(runner, "execute", self.pass_check), self.assertRaisesRegex(runner.Stop, "lab1"):
             self.r.run(True)
+
+    def test_other_card_cannot_be_completed_silently(self):
+        self.prepare_result()
+        path = self.repo / "Kanban.md"
+        path.write_text(runner.move_card(path.read_text(), "S1-UI", "Готово"))
+        runner.git(self.repo, "add", ".")
+        runner.git(self.repo, "commit", "--amend", "--no-edit")
+        output = Path(self.r.state["result"])
+        report = json.loads(output.read_text())
+        report["commit"] = runner.git(self.repo, "rev-parse", "HEAD")
+        output.write_text(json.dumps(report))
+        with self.assertRaisesRegex(runner.Stop, "чужие карточки"):
+            self.r.verify()
+
+    def test_run_rejects_dirty_checkout_and_wrong_branch(self):
+        (self.repo / "foreign.txt").write_text("uncommitted")
+        with self.assertRaisesRegex(runner.Stop, "незакоммиченные"):
+            self.r.run(False)
+        (self.repo / "foreign.txt").unlink()
+        runner.git(self.repo, "switch", "lab1")
+        with self.assertRaisesRegex(runner.Stop, "checkout main"):
+            self.r.run(False)
+
+    def test_legacy_state_is_rejected(self):
+        self.r.statefile.write_text(json.dumps({"phase": "agent", "worker": "old"}))
+        with self.assertRaisesRegex(runner.Stop, "Старый формат"):
+            runner.Runner(self.args)
 
     def test_dirty_worker_is_rejected(self):
         self.prepare_result()
@@ -159,7 +187,33 @@ class RunnerTests(unittest.TestCase):
         self.assertIn("resume", commands[1])
         self.assertIn("session-test", commands[1])
         self.assertEqual(len(self.r.state["usage"]), 2)
-        self.assertEqual(runner.git(self.repo, "rev-parse", "stage/1-election"), self.original)
+        self.assertEqual(runner.git(self.repo, "rev-parse", "lab1"), self.original)
+
+    def test_resume_repairs_partial_changes_in_same_checkout(self):
+        self.r.start(self.r.select())
+        self.r.state["session"] = "existing-session"
+        (self.repo / "partial.txt").write_text("unfinished")
+        commands = []
+        def execute(command, cwd, logfile, timeout):
+            if command[0] != "codex":
+                return self.pass_check(command, cwd, logfile, timeout)
+            commands.append(command)
+            path = self.repo / "Kanban.md"
+            path.write_text(runner.move_card(path.read_text(), "S1-API", "Готово"))
+            runner.git(self.repo, "add", ".")
+            runner.git(self.repo, "commit", "-m", "finish partial work")
+            sha = runner.git(self.repo, "rev-parse", "HEAD")
+            Path(command[command.index("-o") + 1]).write_text(json.dumps(dict(
+                task_id="S1-API", status="done", reason="fixed", commit=sha,
+                extra_checks="contract PASS", limitations="")))
+            logfile.write_text('{"type":"turn.completed"}\n')
+            return 0
+        with patch.object(runner, "execute", execute):
+            self.r.run(True)
+        self.assertIn("existing-session", commands[0])
+        self.assertEqual(Path(self.r.state["worker"]), self.repo)
+        self.assertEqual(self.r.state["phase"], "completed")
+        self.assertEqual(runner.git(self.repo, "status", "--porcelain"), "")
 
     def test_missing_json_stops_even_after_completed_turn(self):
         self.r.start(self.r.select())
@@ -202,7 +256,7 @@ print(json.dumps(dict(type='turn.completed', usage=dict(input_tokens=12))))
         self.assertEqual(saved["task"], "S1-API")
         self.assertEqual(saved["session"], "fake-cli-session")
         self.assertIn("missing browser", saved["error"])
-        self.assertEqual(runner.git(self.repo, "rev-parse", "stage/1-election"), self.original)
+        self.assertEqual(runner.git(self.repo, "rev-parse", "lab1"), self.original)
 
     def test_cli_repository_lock_prevents_second_runner(self):
         import fcntl

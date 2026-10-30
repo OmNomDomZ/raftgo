@@ -30,3 +30,6 @@ coverage.html
 
 # Logs
 *.log
+
+# Personal Obsidian vault settings and installed plugins
+.obsidian/

@@ -16,8 +16,6 @@ class Stop(RuntimeError):
     pass
 
 
-STAGES = ["prepare/in-memory", "stage/1-election", "stage/2-log",
-          "stage/3-kv", "stage/4-cas-lock"]
 FIELDS = {"task_id": {"type": "string"},
           "status": {"type": "string", "enum": ["done", "blocked", "failed", "needs_input"]},
           "reason": {"type": "string"}, "commit": {"type": "string"},
@@ -88,26 +86,6 @@ def cards(text):
         after = re.search(r"\*\*После:\*\* ([^\n]+)", body)
         deps = re.findall(r"\b(?:B\d+|S\d+-[A-Z]+)\b", after[1]) if after else []
         result[task] = {"body": match[0], "deps": deps}
-    return result
-
-
-def layout(task):
-    match = re.fullmatch(r"S([1-4])-(CORE|API|UI|CLIENT|DEMO)", task)
-    if not match:
-        raise Stop(f"Первая версия поддерживает только S1–S4: {task}")
-    stage = int(match[1])
-    target = STAGES[stage]
-    return (STAGES[stage - 1] if match[2] == "CORE" else target), target
-
-
-def worktrees(repo):
-    result = {}
-    path = None
-    for line in git(repo, "worktree", "list", "--porcelain").splitlines():
-        if line.startswith("worktree "):
-            path = Path(line[9:])
-        elif line.startswith("branch refs/heads/"):
-            result[line[18:]] = path
     return result
 
 
@@ -184,21 +162,26 @@ class Runner:
         self.root.mkdir(exist_ok=True)
         self.statefile = self.root / "state.json"
         self.state = json.loads(self.statefile.read_text()) if self.statefile.exists() else None
+        if self.state and self.state.get("version") != 2:
+            raise Stop("Старый формат состояния: завершите или разберите прежний запуск вручную")
 
     def save(self):
         atomic_json(self.statefile, self.state)
 
     def journal(self):
-        path = worktrees(self.repo).get(self.args.journal_branch)
-        if path is None:
-            raise Stop(f"Нужен checkout общего журнала {self.args.journal_branch}")
-        clean(path)
-        return path
+        if git(self.repo, "branch", "--show-current") != "main":
+            raise Stop("Нужен checkout main; контроллер не переключает ветки")
+        clean(self.repo)
+        return self.repo
+
+    def lab_refs(self):
+        return git(self.repo, "for-each-ref", "--format=%(refname) %(objectname)",
+                   "refs/heads/lab[1-4]")
 
     def select(self):
-        text = read_ref(self.repo, self.args.journal_branch, "Kanban.md")
+        text = read_ref(self.repo, "main", "Kanban.md")
         statuses = board(text)
-        catalog = cards(read_ref(self.repo, self.args.journal_branch, "docs/tasks.md"))
+        catalog = cards(read_ref(self.repo, "main", "docs/tasks.md"))
         if set(statuses) != set(catalog):
             raise Stop("Список ID в канбане не совпадает с docs/tasks.md")
         active = [task for task, status in statuses.items() if status in {"В работе", "На проверке"}]
@@ -212,15 +195,12 @@ class Runner:
             missing = [dep for dep in catalog[task]["deps"] if statuses.get(dep) != "Готово"]
             if missing:
                 continue
-            base, target = layout(task)
+            if not re.fullmatch(r"S[1-4]-(CORE|API|UI|CLIENT|DEMO)", task):
+                raise Stop(f"Первая версия поддерживает только S1–S4: {task}")
             if task.endswith("-DEMO"):
                 raise Stop(f"Достигнута {task}: приёмка этапа запускается вручную")
-            sha = git(self.repo, "rev-parse", "--verify", "refs/heads/" + base)
-            base_board = board(read_ref(self.repo, base, "Kanban.md"))
-            missing = [dep for dep in catalog[task]["deps"] if base_board.get(dep) != "Готово"]
-            if missing:
-                raise Stop(f"В базе {base} не готовы зависимости: {', '.join(missing)}")
-            return task, catalog[task], base, target, sha
+            sha = git(self.repo, "rev-parse", "--verify", "refs/heads/main")
+            return task, catalog[task], "main", "main", sha
         if any(status != "Готово" for status in statuses.values()):
             raise Stop("Нет доступных карточек; проверь зависимости")
         return None
@@ -230,21 +210,15 @@ class Runner:
         token = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
         directory = self.root / "runs" / token
         directory.mkdir(parents=True)
-        worker = directory / "worktree"
-        branch = f"task/{task}-auto-{token}"
-        if base != target and git(self.repo, "rev-parse", "--verify", "refs/heads/" + target, check=False):
-            raise Stop(f"Цель {target} уже существует; нужна ручная проверка базы")
-        git(self.repo, "worktree", "add", "-b", branch, str(worker), sha)
-        # Bring only the approved instructions/plan forward, never prototype code.
-        for name in ["AGENTS.md", "Kanban.md", "docs/tasks.md", "docs/delivery.md"]:
-            (worker / name).write_text(read_ref(self.repo, self.args.journal_branch, name) + "\n")
-        git(worker, "add", "AGENTS.md", "Kanban.md", "docs/tasks.md", "docs/delivery.md")
-        git(worker, "commit", "--allow-empty", "-m", f"docs({task}): synchronize task instructions")
-        self.state = {"task": task, "base": base, "base_sha": sha, "target": target,
-                      "branch": branch, "worker": str(worker), "directory": str(directory),
-                      "journal_branch": self.args.journal_branch,
+        self.journal()
+        if git(self.repo, "rev-parse", "HEAD") != sha:
+            raise Stop("main изменилась после выбора карточки")
+        self.state = {"version": 2, "task": task, "base": base, "base_sha": sha,
+                      "target": target, "branch": "main", "worker": str(self.repo),
+                      "directory": str(directory), "journal_branch": "main",
                       "phase": "agent", "attempt": 0, "session": None, "error": "",
-                      "card": card["body"], "usage": []}
+                      "card": card["body"], "usage": [], "lab_refs": self.lab_refs(),
+                      "board": board(read_ref(self.repo, "main", "Kanban.md"))}
         self.save()
 
     def agent(self):
@@ -260,17 +234,18 @@ class Runner:
         self.save()
         prompt = f"""Пользователь поручил только {s['task']} в автоматической очереди.
 Прочитай AGENTS.md, docs/stages.md, docs/delivery.md и карточку ниже.
-Работай ТОЛЬКО в существующей task-ветке {s['branch']}, worktree {s['worker']}.
-База: {s['base']} на {s['base_sha']}; цель после проверки: {s['target']}.
-Особый порядок этой очереди: подготовь коммиты, но НЕ интегрируй результат и
-НЕ изменяй общий журнал в других worktree: это сделает контроллер после проверок.
-В своей копии канбана пометь карточку «В работе», после всех проверок «Готово».
-Не запускай следующие карточки, других агентов, push и изменения main.
+Работай ТОЛЬКО в существующей ветке {s['branch']}, папке {s['worker']}.
+База: main на {s['base_sha']}. Разработка, канбан и журнал находятся в main.
+Не создавай ветки, worktree и копии проекта, не переключай checkout.
+Не изменяй lab1–lab4: их снимки готовятся вручную в DEMO.
+Пометь карточку «В работе», после всех проверок «Готово».
+Ограничения будущих функций относятся к снимкам labN; сохраняй полный код main.
+Не запускай следующие карточки, других агентов или push. Не переписывай историю main.
 Выполни критерии карточки и обязательные build/test/race/vet или lint/gofmt.
 При недоступной обязательной проверке верни blocked, а не done.
 При done рабочее дерево чистое, commit — полный SHA HEAD, limitations — пустая
 строка; extra_checks — фактические результаты дополнительных проверок карточки.
-Обнови docs/delivery.md в своей task-ветке: поведение, файлы и реальные результаты.
+Обнови docs/delivery.md в main: поведение, файлы и реальные результаты.
 При blocked/failed/needs_input укажи причину; commit может быть пустой строкой.
 Не пытайся исправлять сам контроллер или файлы его состояния.
 Предыдущее препятствие: {s['error'] or 'нет'}
@@ -307,10 +282,14 @@ class Runner:
         worker = Path(s["worker"])
         clean(worker)
         if git(worker, "branch", "--show-current") != s["branch"] or git(worker, "rev-parse", "HEAD") != sha:
-            raise Stop("HEAD/ветка worktree не совпадают с результатом агента")
+            raise Stop("HEAD/ветка checkout не совпадают с результатом агента")
         git(worker, "merge-base", "--is-ancestor", s["base_sha"], sha)
-        if board((worker / "Kanban.md").read_text()).get(s["task"]) != "Готово":
-            raise Stop("Карточка не отмечена готовой в результате")
+        statuses = board((worker / "Kanban.md").read_text())
+        expected = {**s["board"], s["task"]: "Готово"}
+        if statuses != expected:
+            raise Stop("Изменены чужие карточки или своя не отмечена готовой")
+        if self.lab_refs() != s["lab_refs"]:
+            raise Stop("Ссылки lab1–lab4 изменены во время карточки")
         checks = [["go", "build", "./..."], ["go", "test", "-count=1", "./..."],
                   ["go", "test", "-race", "-count=1", "./..."],
                   ["golangci-lint", "run", "./..."] if (worker / ".golangci.yml").exists()
@@ -324,53 +303,26 @@ class Runner:
         clean(worker)
         if git(worker, "rev-parse", "HEAD") != sha:
             raise Stop("HEAD изменился во время проверок")
-        s["phase"] = "integrate"
+        s["phase"] = "verified"
         self.save()
 
     def finish(self):
         s = self.state
         sha = json.loads(Path(s["result"]).read_text())["commit"]
-        target = s["target"]
-        current = git(self.repo, "rev-parse", "--verify", "refs/heads/" + target, check=False)
-        if current != sha:
-            expected = s["base_sha"] if target == s["base"] else ""
-            if current != expected:
-                raise Stop(f"Цель {target} изменилась; интеграция остановлена")
-            checkout = worktrees(self.repo).get(target)
-            if checkout:
-                clean(checkout)
-                git(checkout, "merge", "--ff-only", sha)
-            else:
-                git(self.repo, "update-ref", "refs/heads/" + target, sha, current or "0" * 40)
-        journal = self.journal()
-        marker = f"<!-- autokanban:{s['task']}:{sha} -->"
-        delivery = journal / "docs/delivery.md"
-        if marker not in delivery.read_text():
-            statuses = board((journal / "Kanban.md").read_text())
-            if statuses.get(s["task"]) != "К выполнению":
-                raise Stop("Общий статус карточки изменён другим процессом; нужна сверка")
-            report = json.loads(Path(s["result"]).read_text())
-            (journal / "Kanban.md").write_text(move_card((journal / "Kanban.md").read_text(), s["task"], "Готово"))
-            delivery.write_text(delivery.read_text() + f"\n\n## {s['task']} — автоматическая очередь\n\n"
-                                f"{marker}\n\nВетка `{s['branch']}`, база `{s['base']}` на `{s['base_sha']}`.\n"
-                                f"Результат `{sha}` проверен контроллером и интегрирован в `{target}`.\n"
-                                f"Build/test/race/vet или lint/gofmt/diff-check: PASS.\n"
-                                f"Дополнительные проверки (отчёт исполнителя): {report['extra_checks']}\n"
-                                f"Подробный отчёт и изменённые файлы: docs/delivery.md в task-ветке.\n"
-                                f"Логи контроллера: `{s['directory']}`. Push не выполнялся.\n")
-            git(journal, "add", "Kanban.md", "docs/delivery.md")
-            git(journal, "commit", "-m", f"docs({s['task']}): record verified automatic delivery")
+        self.journal()
+        if git(self.repo, "rev-parse", "HEAD") != sha or self.lab_refs() != s["lab_refs"]:
+            raise Stop("main или снимки изменились после проверок")
         s["phase"] = "completed"
         s["error"] = ""
         self.save()
         atomic_json(Path(s["directory"]) / "state.json", s)
-        print(f"{s['task']}: ГОТОВО → {target} {sha[:12]}", flush=True)
+        print(f"{s['task']}: ПРОВЕРЕНО → main {sha[:12]}", flush=True)
 
     def run(self, resume):
         if self.state and self.state["phase"] != "completed":
             if not resume:
                 raise Stop("Есть незавершённый запуск; используй status и resume")
-            if self.state["journal_branch"] != self.args.journal_branch:
+            if self.state["journal_branch"] != "main":
                 raise Stop("Ветка журнала отличается от сохранённой")
         elif resume:
             raise Stop("Нет незавершённой карточки для resume; используй run")
@@ -378,7 +330,12 @@ class Runner:
             self.state["phase"] = "agent"
             self.save()
         for _ in range(self.args.max_tasks):
-            self.journal()
+            # A failed agent may leave edits; resume must let it repair those edits.
+            if self.state and self.state["phase"] == "agent":
+                if git(self.repo, "branch", "--show-current") != "main":
+                    raise Stop("Нужен checkout main")
+            else:
+                self.journal()
             if not self.state or self.state["phase"] == "completed":
                 selection = self.select()
                 if selection is None:
@@ -387,7 +344,7 @@ class Runner:
                 self.start(selection)
             if self.state["phase"] == "agent":
                 self.agent()
-            # Reverify the exact commit even after an interrupted integration.
+            # Reverify the exact commit after any interruption.
             self.verify()
             self.finish()
 
@@ -396,7 +353,6 @@ def main():
     parser = argparse.ArgumentParser(prog="autokanban", description="Последовательная очередь raftgo; stop on failure")
     parser.add_argument("command", choices=["plan", "run", "resume", "status"])
     parser.add_argument("--repo", default=str(Path(__file__).resolve().parents[2]))
-    parser.add_argument("--journal-branch", default="prepare/in-memory")
     parser.add_argument("--max-tasks", type=int, default=1)
     parser.add_argument("--task-timeout", type=int, default=7200)
     parser.add_argument("--check-timeout", type=int, default=1200)
@@ -407,7 +363,11 @@ def main():
         parser.error("Количество задач и таймауты должны быть положительными")
     if args.repair and args.command != "resume":
         parser.error("--repair используется только с resume")
-    runner = Runner(args)
+    try:
+        runner = Runner(args)
+    except (Stop, OSError, ValueError) as error:
+        print(f"ОСТАНОВКА: {error}", file=sys.stderr)
+        return 1
     if args.command == "status":
         print(json.dumps({"state_file": str(runner.statefile), **(runner.state or {"phase": "idle"})},
                          ensure_ascii=False, indent=2))
@@ -420,6 +380,9 @@ def main():
             return 1
         # Reload under lock: another process may have completed during startup.
         runner.state = json.loads(runner.statefile.read_text()) if runner.statefile.exists() else None
+        if runner.state and runner.state.get("version") != 2:
+            print("ОСТАНОВКА: старый формат состояния; нужен ручной разбор", file=sys.stderr)
+            return 1
         try:
             if args.command == "plan":
                 selection = runner.select()
