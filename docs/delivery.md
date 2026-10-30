@@ -21,7 +21,8 @@ main: полный код + Memory + инфраструктура + канбан
 его как источник при подготовке lab1, не заменять им полную реализацию main.
 Исторические отчёты ниже описывают прежний процесс, их пути не инструкции запуска.
 `lab1` принят в S1-DEMO на `a2f486172f435f2e469802935ecec43048abee69`.
-`lab2`–`lab4` пока не приняты; не создавать их заранее из полного main.
+`lab2` принят в S2-DEMO на `0006d8422076f19336ad9ab8cdb5a9431fc2d4c6`.
+`lab3`–`lab4` пока не приняты; не создавать их заранее из полного main.
 
 ## Задание агенту и очередь
 
@@ -108,14 +109,14 @@ docker compose -p raftgo-scenarios -f scenarios/compose.yaml down
 
 ## Реестр приёмки
 
-Этап 1 принят; остальные строки заполняются после соответствующих DEMO.
+Этапы 1–2 приняты; остальные строки заполняются после соответствующих DEMO.
 
 | Результат | Принятый SHA | Go/race | Docker | UI | Статус |
 | --- | --- | --- | --- | --- | --- |
 | Полный исходник | `70782f23fe695d184981dff932c47181f9eadd21` | build/test/race/vet/gofmt пройдены при планировании | Не запускался | Отсутствует | Источник |
 | prepare/in-memory | `4f6499180cb7c22d429507506431218a445be18b` | build/test/race/vet/gofmt PASS | task1–4, cleanup и полный сброс PASS | Не требуется | B0–B2 готовы |
 | lab1 | `a2f486172f435f2e469802935ecec43048abee69` | build/test/race/vet/gofmt PASS | task1 и cleanup PASS | Firefox PASS | S1-DEMO готова |
-| lab2 | — | — | — | — | Не начат |
+| lab2 | `0006d8422076f19336ad9ab8cdb5a9431fc2d4c6` | build/test/race/vet/gofmt PASS | task1–2, конфликт хвоста и cleanup PASS | Firefox PASS | S2-DEMO готова |
 | lab3 | — | — | — | — | Не начат |
 | lab4 | — | — | — | — | Не начат |
 
@@ -1262,3 +1263,162 @@ URL, неизменяемого состава, отдельной внешне�
 запрета постороннего Location, циклов и потери ответа сохранены/расширены.
 Изменены server/config.go, config_test.go, ui.go, ui_log.go, ui_log_test.go,
 ui_test.go, config/cluster.json, scenarios/cluster.json, docs/api.md и demo2.md.
+
+### S2-DEMO — итоговая приёмка lab2
+
+- Ветка разработки `main`: начальная база `9f87844fecf2819cdec8538e7a85f943c94f1744`,
+  подготовка сценария `90a0c42811a4daf7dc813eb1065a43c6790d0757`, исправление
+  Docker-адресации `c0c3138452e599c5980be8fe8f2040f932119b11`.
+- Кандидат создан в том же checkout как `snapshot/lab2` от `90a0c42`;
+  после неудачной браузерной проверки первого кандидата исправление сделано
+  в main на `c0c3138` и включено merge-коммитом в кандидата. Никаких копий
+  checkout, worktree или task-веток. Проверенный и принятый SHA lab2:
+  **`0006d8422076f19336ad9ab8cdb5a9431fc2d4c6`**. Именно он проверен Go,
+  Docker, браузером и инспекцией исходников. Временная ветка сохранена.
+- `lab1` осталась на `a2f486172f435f2e469802935ecec43048abee69`.
+  `lab3`/`lab4` не создавались. Полный код main сохранён; снимок в main не мержился.
+
+Состав снимка (diff относительно main `c0c3138`):
+
+- Удалены kv/, server/kv.go, replay KV-тест, KV-маршруты, состояние Store/results,
+  декодирование команд и зарезервированный префикс. Список хранит произвольные
+  строки, включая пустые/повторяющиеся, без интерпретации.
+- Удалены raft/read.go/read_test.go, pendingRead/readRound/ackedRound,
+  разрешение/отмена чтений и параметры раундов в репликации. Тесты вызовов
+  репликации адаптированы к сокращённой сигнатуре, safety-проверки сохранены.
+- Сохранены no-op/commit/apply, выборы, голосование по актуальности лога,
+  конфликты и безопасная замена суффикса, ограничение commit текущим term,
+  Election Safety, Log Matching, Leader Completeness и State Machine Safety.
+  Соответствующие core-тесты остались и прошли, включая потери сообщений,
+  churn лидеров, replay с тем же Memory и отсутствие commit без большинства.
+- Удалены scenarios/task3–4, dashboard старого полного прототипа, autokanban,
+  tools/autokanban, Kanban и документация очереди/передачи/полного onboarding.
+  README, AGENTS, docs/api.md, stages.md, demo2.md и scenarios/README.md
+  описывают только доступный этап. UI этапа 2 сохранён полностью.
+- Личные .obsidian не включены в Git-снимок и не удалялись у пользователя.
+  Игнорируемый Python cache контроллера временно сохранён вне checkout и
+  возвращён в main; содержимое контроллера не менялось.
+
+Фактический Go-прогон на точном SHA `0006d84` (Go 1.27.3; go.mod 1.27.1,
+конфига golangci нет):
+
+```text
+$ go build ./...
+exit=0 (вывод пуст)
+$ go test -count=1 ./...
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/raft      1.010s
+ok  raftgo/server    6.309s
+ok  raftgo/storage   0.003s
+?   raftgo/transport [no test files]
+exit=0
+$ go test -race -count=1 ./...
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/raft      6.786s
+ok  raftgo/server    7.477s
+ok  raftgo/storage   1.016s
+?   raftgo/transport [no test files]
+exit=0
+$ go vet ./...
+exit=0 (вывод пуст)
+$ gofmt -l .
+exit=0 (вывод пуст)
+$ git diff --check
+exit=0 (вывод пуст)
+```
+
+Docker собран из этого SHA, отдельный проект `raftgo-scenarios`:
+
+```text
+$ docker compose -p raftgo-scenarios -f scenarios/compose.yaml up -d --build
+exit=0 (пять контейнеров)
+$ python3 scenarios/run.py all
+PASS task1
+PASS task2
+exit=0
+```
+
+Task2.5: старый запрос 409, неподтверждённый хвост заменён записью нового term
+на всех пяти репликах, подтверждённый префикс сохранён. Ноды не перезапускались.
+После браузера выполнен отдельный последовательный повтор `all`: оба PASS,
+снова старый запрос 409, подтверждённый префикс до index=32 одинаков на пяти нодах.
+Логи `/tmp/raftgo-s2-demo-{build,scenarios,final-scenarios}.log`.
+
+Дополнительная проверка контракта `/tmp/raftgo-s2-demo-contract.log`:
+
+```text
+PASS tracked tree and source: future packages, API, decoder, rounds, tests, scenarios and controller absent
+PASS node1..node5: local status/log schema; seven future API methods return 404
+PASS candidate contract
+```
+
+Проверены `/status`, `/election`, `/log` всех узлов: consistency=local,
+число записей равно last_log_index, commit_index не выше длины лога.
+GET/POST/PUT/DELETE /kv/x, POST /kv/x/cas, POST/DELETE /kv/x/lock дают 404.
+Проверены Git-дерево и исходники: будущих реализаций, полей, декодеров,
+ReadIndex-раундов и скрывающих флагов нет.
+
+Реальный Firefox 158, X11/Marionette, Docker на том же SHA. После исправления
+конфига выполнен отдельный браузерный прогон без параллельного управления
+сценариями; лог `/tmp/raftgo-s2-demo-browser.log`, exit=0:
+
+```text
+PASS follower origin: repeated/empty/HTML/Unicode strings; five replicas; 201 index/term; no-op distinct; HTML literal
+PASS all five replica logs selectable via same origin
+PASS pause leader node1 -> node5; write through follower succeeds
+PASS no majority: real 504 index/term, unknown outcome; visible uncommitted tail; one POST, no retry; no live leader
+PASS no leader: 503 shown without retry
+PASS unpause/recovery; all browser requests same origin; narrow screen without page overflow
+PASS cleanup: test browser closed; five Docker nodes resumed
+```
+
+Просмотрены изображения `/tmp/raftgo-s2-demo-{normal,tail,no-quorum,mobile}.png`:
+no-op и пустая строка различимы, HTML текстовый, неподтверждённый хвост выделен,
+504 index=20/term=15 явно помечен неизвестным исходом, три недоступные карточки
+устарели, данные восстановились после unpause. Горизонтального переполнения
+страницы на узком экране нет; таблица имеет собственную прокрутку.
+Первый запуск harness после исправления начался до конца runner и получил 503
+до управления отказами; итоговый отдельный запуск выше и последующий повтор
+runner завершились успешно. Продуктовый код после SHA `0006d84` не менялся.
+
+Cleanup проверен искусственным RuntimeError внутри task1 после pause и
+отсоединения сети node5: runner вывел диагностику, пробросил исходную ошибку,
+finally восстановил прежние IP/алиасы и снял паузу. Container ID и PID прежние,
+RAM не терялась, кластер снова согласен по лидеру. Лог:
+`/tmp/raftgo-s2-demo-cleanup.log`, exit=0 у проверяющего harness.
+
+После проверок свой стенд целиком удалён через compose down; Firefox закрыт.
+Существующий проект `rafting` с пятью контейнерами не перезапускался и не менялся.
+Только после успеха создана lab2 на проверенном SHA, checkout возвращён в main.
+S2-DEMO готова, канбан и реестр обновлены. Ограничений приёмки нет.
+Push и другие карточки/агенты не запускались. Следующий доступный ID — S3-CORE.
+
+После возврата в main выполнен полный обязательный набор на коде `c0c3138`
+с итоговыми изменениями канбана/отчёта:
+
+```text
+$ go build ./...
+exit=0 (вывод пуст)
+$ go test -count=1 ./...
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv        0.002s
+ok  raftgo/raft      0.946s
+ok  raftgo/server    6.334s
+ok  raftgo/storage   0.002s
+?   raftgo/transport [no test files]
+exit=0
+$ go test -race -count=1 ./...
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv        1.006s
+ok  raftgo/raft      6.437s
+ok  raftgo/server    7.484s
+ok  raftgo/storage   1.016s
+?   raftgo/transport [no test files]
+exit=0
+$ go vet ./...
+exit=0 (вывод пуст)
+$ gofmt -l .
+exit=0 (вывод пуст)
+$ git diff --check
+exit=0 (вывод пуст)
+```
