@@ -49,10 +49,8 @@ func (rf *Raft) startElectionLocked(ctx context.Context) {
 
 	ctx = rf.rpcContextLocked(ctx)
 	args := &RequestVoteArgs{
-		Term:         rf.currentTerm,
-		CandidateID:  rf.id,
-		LastLogIndex: rf.lastLogIndexLocked(),
-		LastLogTerm:  rf.lastLogTermLocked(),
+		Term:        rf.currentTerm,
+		CandidateID: rf.id,
 	}
 	for _, p := range rf.peers {
 		rf.wg.Go(func() { rf.requestVote(ctx, p.id, args) })

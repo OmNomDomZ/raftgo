@@ -44,7 +44,6 @@ func TestHTTPElectionRolesAndVotes(t *testing.T) {
 		}
 		node, err := raft.New(raft.Config{
 			ID: "A", Peers: peers, Storage: &storage.Memory{}, Transport: tr,
-			ApplyCh:            make(chan raft.ApplyMsg, 16),
 			ElectionTimeoutMin: time.Hour, ElectionTimeoutMax: 2 * time.Hour,
 			HeartbeatInterval: time.Minute, RequestVoteTimeout: 3 * time.Hour,
 		})
@@ -68,11 +67,11 @@ func TestHTTPElectionRolesAndVotes(t *testing.T) {
 				if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 					t.Fatal(err)
 				}
-				want := raft.ElectionStatus{ID: "A", Role: role, Term: term, LeaderID: leader, VotedFor: voted, Votes: votes, Quorum: 3, Running: running}
-				if got.Node.Election() != want || !reflect.DeepEqual(got.Members, members) {
+				want := raft.Status{ID: "A", Role: role, Term: term, LeaderID: leader, VotedFor: voted, Votes: votes, Quorum: 3, Running: running}
+				if got.Node != want || !reflect.DeepEqual(got.Members, members) {
 					t.Fatalf("%s: got %+v; want %+v, members %v", path, got, want, members)
 				}
-				// Main retains the full schema, including zero-valued fields.
+				// All eight election fields are present, including zero-valued fields.
 				var raw map[string]json.RawMessage
 				if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
 					t.Fatal(err)
@@ -84,7 +83,7 @@ func TestHTTPElectionRolesAndVotes(t *testing.T) {
 				if err := json.Unmarshal(raw["node"], &fields); err != nil {
 					t.Fatal(err)
 				}
-				keys := []string{"id", "role", "term", "leader_id", "voted_for", "votes", "quorum", "running", "commit_index", "last_log_index"}
+				keys := []string{"id", "role", "term", "leader_id", "voted_for", "votes", "quorum", "running"}
 				if len(fields) != len(keys) {
 					t.Fatalf("unexpected fields: %v", fields)
 				}
@@ -157,7 +156,7 @@ func TestHTTPElectionRolesAndVotes(t *testing.T) {
 }
 
 func TestHTTPElectionRouting(t *testing.T) {
-	node, err := raft.New(raft.Config{ID: "A", Storage: &storage.Memory{}, Transport: electionTransport{}, ApplyCh: make(chan raft.ApplyMsg)})
+	node, err := raft.New(raft.Config{ID: "A", Storage: &storage.Memory{}, Transport: electionTransport{}})
 	if err != nil {
 		t.Fatal(err)
 	}

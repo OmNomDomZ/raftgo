@@ -29,7 +29,7 @@ func TestHeartbeatReply_HigherTermStepsDownDespitePersistFailure(t *testing.T) {
 	rf.heartbeatTimer.Reset(0)
 	st.setFailSave(true)
 
-	rf.sendAppendEntries(context.Background(), "B", &AppendEntriesArgs{Term: 2, LeaderID: "A"}, 0)
+	rf.sendAppendEntries(context.Background(), "B", &AppendEntriesArgs{Term: 2, LeaderID: "A"})
 
 	if role, term := roleAndTerm(rf); role != Follower || term != 5 {
 		t.Fatalf("expected Follower at term 5, got %v at term %d", role, term)

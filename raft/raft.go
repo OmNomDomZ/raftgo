@@ -41,11 +41,10 @@ const (
 	defaultRequestVoteTimeout = 200 * time.Millisecond
 	defaultElectionMin        = 150 * time.Millisecond
 	defaultElectionMax        = 300 * time.Millisecond
-	defaultMaxEntriesPerRPC   = 64
 )
 
-// Config configures a node. ID, Peers, Transport, Storage and ApplyCh are
-// required; zero values of the other fields select defaults.
+// Config configures a node. ID, Transport and Storage are required.
+// Empty Peers creates a single-node cluster; other zero values select defaults.
 type Config struct {
 	ID    NodeID
 	Peers []NodeID // other cluster members, excluding ID
@@ -53,12 +52,6 @@ type Config struct {
 	Transport Transport
 	Storage   Storage
 	Clock     Clock // default SystemClock
-
-	// ApplyCh receives every committed entry, in log order; see ApplyMsg.
-	// The node sends from its own goroutine without holding its lock, so
-	// the consumer may call Start or GetState while handling a message. The
-	// node never closes ApplyCh and stops sending once Run returns.
-	ApplyCh chan<- ApplyMsg
 
 	// The election timeout is drawn uniformly from [ElectionTimeoutMin,
 	// ElectionTimeoutMax) on every reset, so split votes resolve (§5.2).
@@ -78,14 +71,10 @@ type Config struct {
 	// AppendEntriesTimeout bounds each AppendEntries RPC. At most one is in
 	// flight per peer, so a lost one holds back the next for this long; it
 	// must stay below the minimum election timeout, or the peer's election
-	// timer fires under a healthy leader (§5.2). Raise it when a follower's
-	// disk or the network is slow enough that RPCs carrying entries time out.
+	// timer fires under a healthy leader (§5.2). Raise it when the network
+	// is slow enough that heartbeats time out.
 	// Default: HeartbeatInterval.
 	AppendEntriesTimeout time.Duration
-	// MaxEntriesPerRPC bounds the entries in one AppendEntries, so catching
-	// up a lagging follower does not produce an RPC that cannot finish
-	// within AppendEntriesTimeout. Default: 64.
-	MaxEntriesPerRPC int
 
 	Logger *slog.Logger // default discards everything
 
@@ -126,12 +115,6 @@ func (c *Config) validateAndSetDefaults() error {
 	}
 	if c.Storage == nil {
 		errs = append(errs, errors.New("storage is required"))
-	}
-	if c.ApplyCh == nil {
-		errs = append(errs, errors.New("apply channel is required"))
-	}
-	if c.MaxEntriesPerRPC < 0 {
-		errs = append(errs, fmt.Errorf("negative max entries per RPC %d", c.MaxEntriesPerRPC))
 	}
 	if c.HeartbeatInterval < 0 {
 		errs = append(errs, fmt.Errorf("negative heartbeat interval %v", c.HeartbeatInterval))
@@ -183,9 +166,6 @@ func (c *Config) validateAndSetDefaults() error {
 	if c.RequestVoteTimeout == 0 {
 		c.RequestVoteTimeout = defaultRequestVoteTimeout
 	}
-	if c.MaxEntriesPerRPC == 0 {
-		c.MaxEntriesPerRPC = defaultMaxEntriesPerRPC
-	}
 	if c.OnFatal == nil {
 		c.OnFatal = func(msg string) {
 			fmt.Fprintln(os.Stderr, msg)
@@ -211,7 +191,7 @@ func duplicates(ids []NodeID) []NodeID {
 // peer is another cluster member as seen by this node.
 type peer struct {
 	id NodeID
-	// wake wakes the peer's replicator; see replicate.
+	// wake schedules the peer's next heartbeat; see heartbeatPeer.
 	wake chan struct{}
 }
 
@@ -227,16 +207,12 @@ type Raft struct {
 	heartbeatInterval    time.Duration
 	requestVoteTimeout   time.Duration
 	appendEntriesTimeout time.Duration
-	maxEntriesPerRPC     int
-	applyCh              chan<- ApplyMsg
-	// applyWake wakes the applier; see apply.
-	applyWake      chan struct{}
-	logger         *slog.Logger
-	onFatal        func(msg string)
-	electionTimer  Timer // paces quorum checks while Leader; see checkQuorumLocked
-	heartbeatTimer Timer // running only while Leader
+	logger               *slog.Logger
+	onFatal              func(msg string)
+	electionTimer        Timer // paces quorum checks while Leader; see checkQuorumLocked
+	heartbeatTimer       Timer // running only while Leader
 	// onBecomeLeader, if set, is called under mu whenever the node becomes
-	// Leader. Tests use it to check Election Safety and Leader Completeness
+	// Leader. Tests use it to check Election Safety
 	// over a node's whole history rather than at sampled moments.
 	onBecomeLeader func(term Term)
 
@@ -272,30 +248,9 @@ type Raft struct {
 	// onElectionTimeout.
 	electionDeadline time.Time
 
-	// log is always durable: storeLogLocked writes it before adopting it.
-	// See log.go for its layout.
-	log []LogEntry
-	// commitIndex is the highest index known to be committed. It is
-	// volatile: a restarted node learns it again from the leader, or as
-	// leader by committing an entry of its own term.
-	commitIndex Index
-	// nextIndex and matchIndex are the leader's view of each peer's log
-	// (Figure 2), reset on every election win; see initLeaderStateLocked.
-	nextIndex  map[NodeID]Index
-	matchIndex map[NodeID]Index
 	// heardFrom holds the peers that have answered this leader since its
 	// last quorum check; see checkQuorumLocked.
 	heardFrom map[NodeID]struct{}
-	// mismatchLogged holds the peers already reported for rejecting a prefix
-	// they had matched, so a broken peer is logged once per term instead of
-	// on every heartbeat.
-	mismatchLogged map[NodeID]struct{}
-	// readRound numbers the requests to confirm leadership for reads, and
-	// ackedRound is the latest round each peer has answered in this term.
-	// reads are the ReadIndex calls waiting on them; see read.go.
-	readRound  uint64
-	ackedRound map[NodeID]uint64
-	reads      []*pendingRead
 }
 
 // New creates a node, restoring its term and vote from cfg.Storage if a
@@ -310,15 +265,6 @@ func New(cfg Config) (*Raft, error) {
 	if err != nil {
 		return nil, fmt.Errorf("raft: load state: %w", err)
 	}
-	entries, err := cfg.Storage.LoadLog()
-	if err != nil {
-		return nil, fmt.Errorf("raft: load log: %w", err)
-	}
-	// A node only stores entries of terms it has already adopted durably, so
-	// anything else means the storage is corrupt.
-	if err := checkEntries(0, entries, state.CurrentTerm); err != nil {
-		return nil, fmt.Errorf("raft: invalid stored log: %w", err)
-	}
 
 	rf := &Raft{
 		id:                   cfg.ID,
@@ -329,9 +275,6 @@ func New(cfg Config) (*Raft, error) {
 		heartbeatInterval:    cfg.HeartbeatInterval,
 		requestVoteTimeout:   cfg.RequestVoteTimeout,
 		appendEntriesTimeout: cfg.AppendEntriesTimeout,
-		maxEntriesPerRPC:     cfg.MaxEntriesPerRPC,
-		applyCh:              cfg.ApplyCh,
-		applyWake:            make(chan struct{}, 1),
 		logger:               cfg.Logger.With("node", cfg.ID),
 		onFatal:              cfg.OnFatal,
 		electionTimer:        cfg.Clock.NewTimer(0),
@@ -339,7 +282,6 @@ func New(cfg Config) (*Raft, error) {
 		role:                 Follower,
 		currentTerm:          state.CurrentTerm,
 		votedFor:             state.VotedFor,
-		log:                  append([]LogEntry{{}}, entries...),
 	}
 	// The Timer interface has no way to create a stopped timer; Run arms the
 	// election timer.
@@ -361,7 +303,7 @@ func (rf *Raft) GetState() (term Term, isLeader bool) {
 }
 
 // Leader returns the leader this node knows of in its current term, or "" if
-// it knows none; see NotLeaderError. A stopped node knows none.
+// it knows none; a stopped node knows none.
 func (rf *Raft) Leader() NodeID {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -407,16 +349,7 @@ func (rf *Raft) quorum() int {
 
 // becomeLeaderLocked is called once a Candidate has a quorum of votes.
 func (rf *Raft) becomeLeaderLocked() {
-	// The no-op must be durable before the node acts as leader, since
-	// counting its own log towards commitment assumes that. If it cannot be
-	// stored, the node stays Candidate: the next grant or election retries,
-	// and until then there is no leader in this term, which is always safe.
-	noop := LogEntry{Term: rf.currentTerm, Kind: EntryNoOp}
-	if err := rf.storeLogLocked(rf.lastLogIndexLocked()+1, []LogEntry{noop}); err != nil {
-		return
-	}
-	rf.logger.Info("became leader", "term", rf.currentTerm, "votes", len(rf.votes),
-		"lastLogIndex", rf.lastLogIndexLocked())
+	rf.logger.Info("became leader", "term", rf.currentTerm, "votes", len(rf.votes))
 	rf.role = Leader
 	rf.leaderID = rf.id
 	rf.initLeaderStateLocked()
@@ -427,26 +360,13 @@ func (rf *Raft) becomeLeaderLocked() {
 	rf.cancelRPCsLocked()
 	// From now on the timer schedules quorum checks instead of elections.
 	rf.resetElectionTimerLocked()
-	// A single-node cluster commits the no-op right away.
-	rf.advanceCommitLocked()
 	// Fire immediately to assert leadership without waiting a full interval.
 	rf.heartbeatTimer.Reset(0)
 }
 
-// initLeaderStateLocked resets the leader's view of its peers (Figure 2):
-// it knows nothing about their logs yet, so it optimistically starts
-// replicating right after its own last entry.
+// initLeaderStateLocked starts a fresh quorum observation window.
 func (rf *Raft) initLeaderStateLocked() {
-	rf.nextIndex = make(map[NodeID]Index, len(rf.peers))
-	rf.matchIndex = make(map[NodeID]Index, len(rf.peers))
-	for _, p := range rf.peers {
-		rf.nextIndex[p.id] = rf.lastLogIndexLocked() + 1
-		rf.matchIndex[p.id] = 0
-	}
 	rf.heardFrom = make(map[NodeID]struct{}, len(rf.peers))
-	rf.mismatchLogged = make(map[NodeID]struct{})
-	rf.readRound = 0
-	rf.ackedRound = make(map[NodeID]uint64, len(rf.peers))
 }
 
 // adoptHigherTermLocked moves to a newer term and steps down (§5.1). It does
@@ -477,8 +397,7 @@ func (rf *Raft) adoptHigherTermLocked(term Term) {
 
 // checkQuorumLocked runs on every election timeout of a leader and steps it
 // down unless a quorum has answered it since the previous one (CheckQuorum,
-// §6.2 of Ongaro's thesis). A leader cut off in a minority would otherwise
-// keep accepting commands it can never commit until the partition heals.
+// §6.2 of Ongaro's thesis). A leader cut off in a minority must relinquish leadership.
 func (rf *Raft) checkQuorumLocked() {
 	if len(rf.heardFrom)+1 >= rf.quorum() {
 		clear(rf.heardFrom)
@@ -497,7 +416,6 @@ func (rf *Raft) stepDownLocked() {
 	rf.heartbeatTimer.Stop()
 	rf.resetElectionTimerLocked()
 	rf.cancelRPCsLocked()
-	rf.failReadsLocked(rf.notLeaderErrLocked())
 }
 
 func (rf *Raft) resetElectionTimerLocked() {

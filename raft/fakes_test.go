@@ -3,7 +3,6 @@ package raft
 import (
 	"context"
 	"errors"
-	"fmt"
 	"slices"
 	"sync"
 	"testing"
@@ -138,14 +137,11 @@ func boundedTimeout(t testing.TB, lo, hi time.Duration, f func() time.Duration) 
 }
 
 type fakeStorage struct {
-	mu          sync.Mutex
-	state       PersistentState
-	log         []LogEntry
-	saves       int  // successful SaveState calls
-	logWrites   int  // successful StoreLog calls
-	failSave    bool // fails SaveState and StoreLog
-	failLoad    bool
-	failLoadLog bool
+	mu       sync.Mutex
+	state    PersistentState
+	saves    int  // successful SaveState calls
+	failSave bool // fails SaveState and StoreLog
+	failLoad bool
 }
 
 func (s *fakeStorage) saveCount() int {
@@ -178,42 +174,6 @@ func (s *fakeStorage) LoadState() (PersistentState, error) {
 		return PersistentState{}, errors.New("fake storage: load failed")
 	}
 	return s.state, nil
-}
-
-func (s *fakeStorage) StoreLog(from Index, entries []LogEntry) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.failSave {
-		return errors.New("fake storage: store log failed")
-	}
-	if from == 0 || from > Index(len(s.log))+1 {
-		return fmt.Errorf("fake storage: store from %d, log has %d entries", from, len(s.log))
-	}
-	s.log = append(slices.Clone(s.log[:from-1]), entries...)
-	s.logWrites++
-	return nil
-}
-
-func (s *fakeStorage) LoadLog() ([]LogEntry, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.failLoadLog {
-		return nil, errors.New("fake storage: load log failed")
-	}
-	return slices.Clone(s.log), nil
-}
-
-// storedLog returns a copy of the stored log.
-func (s *fakeStorage) storedLog() []LogEntry {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return slices.Clone(s.log)
-}
-
-func (s *fakeStorage) logWriteCount() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.logWrites
 }
 
 // fakeTransport calls the target node's handlers synchronously in the
@@ -506,4 +466,15 @@ func (nilTransport) RequestVote(context.Context, NodeID, *RequestVoteArgs) (*Req
 
 func (nilTransport) AppendEntries(context.Context, NodeID, *AppendEntriesArgs) (*AppendEntriesReply, error) {
 	return nil, nil
+}
+
+type replyingPeer struct {
+	reply func(*AppendEntriesArgs) *AppendEntriesReply
+}
+
+func (replyingPeer) HandleRequestVote(*RequestVoteArgs) (*RequestVoteReply, error) {
+	return nil, errors.New("not implemented")
+}
+func (p replyingPeer) HandleAppendEntries(args *AppendEntriesArgs) (*AppendEntriesReply, error) {
+	return p.reply(args), nil
 }

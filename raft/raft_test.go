@@ -36,8 +36,6 @@ func TestNew_RejectsInvalidConfig(t *testing.T) {
 		{"empty peer ID", func(c *Config) { c.Peers = append(c.Peers, "") }},
 		{"missing transport", func(c *Config) { c.Transport = nil }},
 		{"missing storage", func(c *Config) { c.Storage = nil }},
-		{"missing apply channel", func(c *Config) { c.ApplyCh = nil }},
-		{"negative max entries per RPC", func(c *Config) { c.MaxEntriesPerRPC = -1 }},
 		{"negative heartbeat interval", func(c *Config) { c.HeartbeatInterval = -time.Millisecond }},
 		{"negative RequestVote timeout", func(c *Config) { c.RequestVoteTimeout = -time.Millisecond }},
 		{"negative AppendEntries timeout", func(c *Config) { c.AppendEntriesTimeout = -time.Millisecond }},

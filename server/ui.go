@@ -12,8 +12,7 @@ import (
 	"raftgo/raft"
 )
 
-// These resources depend only on the election schema. In lab1 use the
-// election-only Status directly instead of Status.Election(), retaining no log code.
+// Embedded resources use the election status schema.
 //
 //go:embed ui/*
 var electionAssets embed.FS
@@ -21,11 +20,11 @@ var electionAssets embed.FS
 const statusTimeout = 600 * time.Millisecond
 
 type memberObservation struct {
-	ID         raft.NodeID          `json:"id"`
-	Available  bool                 `json:"available"`
-	ObservedAt *time.Time           `json:"observed_at,omitempty"`
-	Node       *raft.ElectionStatus `json:"node,omitempty"`
-	Error      string               `json:"error,omitempty"`
+	ID         raft.NodeID  `json:"id"`
+	Available  bool         `json:"available"`
+	ObservedAt *time.Time   `json:"observed_at,omitempty"`
+	Node       *raft.Status `json:"node,omitempty"`
+	Error      string       `json:"error,omitempty"`
 }
 
 func (a *API) electionUI(mux *http.ServeMux) {
@@ -58,9 +57,9 @@ func (a *API) electionUI(mux *http.ServeMux) {
 		for i, m := range members {
 			wg.Go(func() {
 				out[i] = memberObservation{ID: m.ID, Error: "status unavailable"}
-				var status raft.ElectionStatus
+				var status raft.Status
 				if m.ID == a.Node.Status().ID {
-					status = a.Node.Status().Election()
+					status = a.Node.Status()
 				} else {
 					req, err := http.NewRequestWithContext(ctx, http.MethodGet, m.APIURL+"/status", nil)
 					if err != nil {
@@ -75,7 +74,7 @@ func (a *API) electionUI(mux *http.ServeMux) {
 						return
 					}
 					var body struct {
-						Node *raft.ElectionStatus `json:"node"`
+						Node *raft.Status `json:"node"`
 					}
 					// Bound memory even if a configured peer sends an oversized response.
 					data, err := io.ReadAll(io.LimitReader(resp.Body, (64<<10)+1))

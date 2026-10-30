@@ -13,32 +13,22 @@ func succeedingPeer() replyingPeer {
 	}}
 }
 
-// newTestLeader returns node A leading term with log entries and
-// commitIndex commit, with peers B and C answering through succeedingPeer.
-func newTestLeader(t *testing.T, term Term, commit Index, entries ...LogEntry) *Raft {
-	t.Helper()
+// newTestLeader creates a leader with two responsive peers.
+func newTestLeader(t *testing.T, term Term) *Raft {
 	rf, _ := newTestNode(t, "A", "B", "C")
-	setLog(t, rf, entries...)
 	setRoleAndTerm(rf, Leader, term, "A")
-	rf.mu.Lock()
-	rf.commitIndex = commit
-	rf.mu.Unlock()
 	for _, p := range []NodeID{"B", "C"} {
 		rf.transport.(*fakeTransport).register(p, succeedingPeer())
 	}
 	return rf
 }
 
-// replicateTo sends peer the AppendEntries its replicator would send next.
-func replicateTo(rf *Raft, peer NodeID) {
-	rf.mu.Lock()
-	args, round := rf.appendEntriesArgsLocked(peer)
-	rf.mu.Unlock()
-	rf.sendAppendEntries(context.Background(), peer, args, round)
+func heartbeatTo(rf *Raft, peer NodeID) {
+	rf.sendAppendEntries(context.Background(), peer, &AppendEntriesArgs{Term: rf.currentTerm, LeaderID: rf.id})
 }
 
 func TestCheckQuorum_StepsDownWithoutQuorum(t *testing.T) {
-	rf := newTestLeader(t, 2, 1, entriesOfTerms(2)...)
+	rf := newTestLeader(t, 2)
 
 	rf.mu.Lock()
 	rf.checkQuorumLocked()
@@ -55,8 +45,8 @@ func TestCheckQuorum_StepsDownWithoutQuorum(t *testing.T) {
 }
 
 func TestCheckQuorum_LeaderWithQuorumStays(t *testing.T) {
-	rf := newTestLeader(t, 2, 1, entriesOfTerms(2)...)
-	replicateTo(rf, "B")
+	rf := newTestLeader(t, 2)
+	heartbeatTo(rf, "B")
 
 	rf.mu.Lock()
 	rf.checkQuorumLocked()
@@ -78,24 +68,8 @@ func TestCheckQuorum_LeaderWithQuorumStays(t *testing.T) {
 	}
 }
 
-func TestCheckQuorum_RejectionInOurTermCounts(t *testing.T) {
-	// A log mismatch is still an answer in this leader's term.
-	rf := newTestLeader(t, 2, 1, entriesOfTerms(2)...)
-	rf.transport.(*fakeTransport).register("B", replyingPeer{func(args *AppendEntriesArgs) *AppendEntriesReply {
-		return &AppendEntriesReply{Term: args.Term, ConflictIndex: 1}
-	}})
-	replicateTo(rf, "B")
-
-	rf.mu.Lock()
-	rf.checkQuorumLocked()
-	rf.mu.Unlock()
-	if role, _ := roleAndTerm(rf); role != Leader {
-		t.Fatalf("leader answered by a quorum became %v", role)
-	}
-}
-
 func TestCheckQuorum_RunsOnLeaderElectionTimeout(t *testing.T) {
-	rf := newTestLeader(t, 2, 1, entriesOfTerms(2)...)
+	rf := newTestLeader(t, 2)
 	rf.mu.Lock()
 	rf.resetElectionTimerLocked()
 	rf.mu.Unlock()

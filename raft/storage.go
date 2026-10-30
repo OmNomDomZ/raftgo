@@ -1,36 +1,23 @@
 package raft
 
-// Storage preserves a node's PersistentState and log. Successful writes must
+// Storage preserves a node's term and vote. Successful writes must
 // be synchronous and atomic, and implementations must be safe for concurrent use.
 // In the safe-memory model, the same Storage object survives simulated node
 // restarts; losing the process memory starts a new empty cluster, not recovery.
 //
 // A failed write must not later be mistaken for a successful persisted write.
 // If a backend cannot establish what survived a failure, it must reject later
-// operations rather than acknowledge state or entries a restart could lose.
+// operations rather than acknowledge state a restart could lose.
 type Storage interface {
 	SaveState(state PersistentState) error
 	// LoadState returns the zero PersistentState for a fresh node with no
 	// saved state. Saved state that cannot be read must be reported as an
 	// error, never as a fresh node: that would roll back currentTerm/votedFor.
 	LoadState() (PersistentState, error)
-
-	// StoreLog replaces the stored entries from index from on with entries,
-	// as one atomic write: the node truncates a conflicting suffix and
-	// appends in one call (§5.3). from is at least 1 and at most one past
-	// the last stored index. StoreLog must not modify entries or keep
-	// references into them after it returns. Invalid from returns an error
-	// without changing the stored log; an empty entries slice truncates it.
-	StoreLog(from Index, entries []LogEntry) error
-	// LoadLog returns the stored entries, the first one at index 1. Like
-	// LoadState, it must report a log it cannot read as an error, never as
-	// an empty one: that would lose committed entries. The returned slice and
-	// command bytes belong to the caller and must not alias stored data.
-	LoadLog() ([]LogEntry, error)
 }
 
 // PersistentState is the term and vote that must survive a restart
-// (Figure 2). The log is persisted separately, through Storage.StoreLog.
+// (Figure 2).
 type PersistentState struct {
 	CurrentTerm Term
 	VotedFor    NodeID // "" if no vote was cast in CurrentTerm

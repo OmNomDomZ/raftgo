@@ -5,27 +5,27 @@
     {
       "id": "node1",
       "rpc_url": "http://node1:9000",
-      "api_url": "http://127.0.0.1:18001"
+      "api_url": "http://node1:8080"
     },
     {
       "id": "node2",
       "rpc_url": "http://node2:9000",
-      "api_url": "http://127.0.0.1:18002"
+      "api_url": "http://node2:8080"
     },
     {
       "id": "node3",
       "rpc_url": "http://node3:9000",
-      "api_url": "http://127.0.0.1:18003"
+      "api_url": "http://node3:8080"
     },
     {
       "id": "node4",
       "rpc_url": "http://node4:9000",
-      "api_url": "http://127.0.0.1:18004"
+      "api_url": "http://node4:8080"
     },
     {
       "id": "node5",
       "rpc_url": "http://node5:9000",
-      "api_url": "http://127.0.0.1:18005"
+      "api_url": "http://node5:8080"
     }
   ]
 }

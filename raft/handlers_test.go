@@ -32,6 +32,7 @@ func TestHandleRequestVote_InvalidArgsGetNoReply(t *testing.T) {
 		{Term: 1},
 		{Term: 1, CandidateID: "A"},
 		{Term: 0, CandidateID: "B"},
+		{Term: 1, CandidateID: "B", LastLogIndex: 1, LastLogTerm: 1},
 	}
 	for _, args := range invalid {
 		if reply, err := rf.HandleRequestVote(args); !errors.Is(err, ErrInvalidArgs) || reply != nil {
@@ -246,10 +247,6 @@ func TestLeaderHint_FollowsAppendEntriesAndTerms(t *testing.T) {
 	mustHandleAppendEntries(t, rf, &AppendEntriesArgs{Term: 2, LeaderID: "B"})
 	if got := rf.Leader(); got != "B" {
 		t.Fatalf("after B's AppendEntries in term 2: leader %q, want B", got)
-	}
-	var nle *NotLeaderError
-	if _, _, err := rf.Start([]byte("x")); !errors.As(err, &nle) || nle.Leader != "B" {
-		t.Fatalf("Start on a follower: %v, want a NotLeaderError naming B", err)
 	}
 
 	// A deposed leader of an earlier term is not followed.

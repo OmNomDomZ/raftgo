@@ -11,11 +11,12 @@ import (
 
 	"raftgo/raft"
 	"raftgo/storage"
+	"raftgo/transport"
 )
 
 func electionAPI(t *testing.T, members []Member) *API {
 	t.Helper()
-	n, err := raft.New(raft.Config{ID: "local", Peers: []raft.NodeID{"good", "slow", "redirect", "bad"}, Storage: &storage.Memory{}, Transport: electionTransport{}, ApplyCh: make(chan raft.ApplyMsg, 16)})
+	n, err := raft.New(raft.Config{ID: "local", Peers: []raft.NodeID{"good", "slow", "redirect", "bad"}, Storage: &storage.Memory{}, Transport: &transport.HTTP{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +56,7 @@ func TestClusterStatusPartialFixedMembership(t *testing.T) {
 		if r.URL.Path != "/status" {
 			t.Errorf("unexpected path %s", r.URL)
 		}
-		writeJSON(w, 200, map[string]any{"node": raft.ElectionStatus{ID: "good", Role: "Candidate", Term: 7, VotedFor: "<img src=x onerror=alert(1)>", Votes: 2, Quorum: 3, Running: true}, "members": []Member{{ID: "injected", APIURL: target.URL}}})
+		writeJSON(w, 200, map[string]any{"node": raft.Status{ID: "good", Role: "Candidate", Term: 7, VotedFor: "<img src=x onerror=alert(1)>", Votes: 2, Quorum: 3, Running: true}, "members": []Member{{ID: "injected", APIURL: target.URL}}})
 	}))
 	defer good.Close()
 	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
@@ -63,7 +64,7 @@ func TestClusterStatusPartialFixedMembership(t *testing.T) {
 	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, target.URL, 307) }))
 	defer redirect.Close()
 	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, 200, map[string]any{"node": raft.ElectionStatus{ID: "wrong"}})
+		writeJSON(w, 200, map[string]any{"node": raft.Status{ID: "wrong"}})
 	}))
 	defer bad.Close()
 	members := []Member{{ID: "local"}, {ID: "good", APIURL: good.URL}, {ID: "slow", APIURL: slow.URL}, {ID: "redirect", APIURL: redirect.URL}, {ID: "bad", APIURL: bad.URL}}
