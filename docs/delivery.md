@@ -934,3 +934,95 @@ exit=0
 
 Все команды завершились с exit=0; gofmt и diff --check без вывода.
 Доска отмечена «Готово», изменения отчёта сохранены локальным коммитом main.
+
+## S2-CORE — проверка строкового Raft-лога (2026-10-31)
+
+Ветка `main`, исходная база `6c132ef5c1f40976d2774377d9060876e84fabe8`,
+существующий чистый checkout `/home/bogdan/rafting`. Зависимость S1-DEMO готова.
+Карточка переведена в «В работе» до изменений, затем в «Готово» после проверок.
+
+Существующая реализация прошла проверку без изменений production-кода:
+новый лидер сохраняет no-op, commit продвигается большинством только через
+запись текущего term; apply доставляет подтверждённый префикс по порядку,
+включая no-op. Конфликт заменяет только неподтверждённый суффикс, старые RPC
+не усекают уже совпавший лог. Ответ записи ждёт apply собственной пары
+index/term; commit без consumer ещё не означает успех, замена позиции другим
+term даёт конфликт. Потерянный ответ RPC не считается подтверждением;
+повторная доставка той же записи не добавляет дубль. KV main сохранён.
+
+Изменённые файлы:
+
+- `raft/replication_cluster_test.go`: State Machine Safety и Leader Completeness
+  теперь сравнивают term/kind/command всех применённых записей, включая no-op,
+  вместо одних байтов пользовательской команды. Во всех кластерных сценариях
+  сохранены Election Safety и Log Matching. BasicAgreement проверяет пустую
+  строку, Unicode, две одинаковые строки на разных индексах и непрозрачность
+  текста SET/внутреннего префикса для самого Raft (HTTP по-прежнему запрещает
+  зарезервированный префикс).
+- `raft/replication_loss_test.go`: адресная потеря ответа после сохранения на
+  follower, отсутствие преждевременного commit, повтор RPC без новой записи
+  в Storage, commit через повторное подтверждение и задержанный дубликат
+  после объявления commit. Используются существующие fake Storage/Transport.
+- `server/string_apply_test.go`: реальный Raft и Memory с fake-транспортом
+  и виртуальным временем synctest. Отложенный запуск Consume доказывает
+  ожидание apply; изоляция лидера и запись нового term на той же позиции
+  доказывают 409 после применения замены вместо ложного 201.
+- `Kanban.md`, `docs/delivery.md`: статус и этот журнал.
+
+Среда: `go version go1.27.3-X:nodwarf5 linux/amd64`; go.mod не менялся,
+`.golangci.yml` отсутствует, использован vet. Реальные результаты:
+
+```text
+$ go build ./...
+exit=0 (вывод пуст)
+
+$ go test -count=1 ./...
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv       0.005s
+ok  raftgo/raft     0.998s
+ok  raftgo/server   6.417s
+ok  raftgo/storage  0.003s
+?   raftgo/transport [no test files]
+exit=0
+
+$ go test -race -count=1 ./...
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv       1.012s
+ok  raftgo/raft     6.203s
+ok  raftgo/server   7.387s
+ok  raftgo/storage  1.013s
+?   raftgo/transport [no test files]
+exit=0
+
+$ go vet ./...
+exit=0 (вывод пуст)
+
+$ gofmt -l .
+exit=0 (вывод пуст)
+
+$ git diff --check
+exit=0 (вывод пуст)
+
+$ go test ./raft ./server -run 'TestSendAppendEntries_LostReply|TestStringWriteWaits' -count=100
+ok  raftgo/raft   0.075s
+ok  raftgo/server 0.046s
+exit=0
+```
+
+Дополнительно выполнен адресный прогон критериев карточки:
+`go test ./raft -run 'TestCluster_|TestHandleAppendEntries_|TestSendAppendEntries_|TestAdvanceCommit_' -count=1` — PASS, exit=0.
+Он включает BasicAgreement, no-op старого term, запрет commit без большинства,
+замену неподтверждённого хвоста изолированного лидера, ремонт конфликтных term,
+старые запросы/ответы, защиту committed-записи, выборы и возврат узлов.
+RandomFaultsKeepSafety прошёл 20 seed, RandomDelaysKeepSafety — 100 seed
+(с проверкой фактической поздней доставки), LeaderChurnKeepsSafety — 10 seed.
+Это проверки конкретных исполнений с потерями/задержками/переупорядочиванием,
+а не формальное доказательство протокола.
+
+S2-CORE готова, обязательные проверки доступны и пройдены. Снимок lab2
+выделяется только в S2-DEMO: из него нужно удалить KV-кодирование и ReadIndex,
+оставив строковый лог, no-op, commit/apply и consumer. В рамках этой карточки
+снимки lab1–lab4, контроллер и его состояние не менялись, checkout и ветка
+не переключались, push и другие агенты не запускались. Docker и ручной UI
+относятся к приёмке этапа S2-DEMO и здесь не запускались. Следующий доступный
+ID — S2-API; он не выполнялся. Препятствий к сдаче S2-CORE нет.

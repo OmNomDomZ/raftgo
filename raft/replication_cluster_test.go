@@ -1,7 +1,6 @@
 package raft
 
 import (
-	"bytes"
 	"fmt"
 	"math/rand/v2"
 	"slices"
@@ -16,8 +15,8 @@ import (
 type applyLog struct {
 	t  *testing.T
 	mu sync.Mutex
-	// committed is every command applied by any node, by index.
-	committed map[Index][]byte
+	// committed includes no-ops and checks the entire index/term/kind identity.
+	committed map[Index]LogEntry
 	// gens counts each node's incarnations, so a message a crashed
 	// incarnation sent is not attributed to the restarted one.
 	gens []int
@@ -29,7 +28,7 @@ type applyLog struct {
 func newApplyLog(t *testing.T, n int) *applyLog {
 	return &applyLog{
 		t:         t,
-		committed: map[Index][]byte{},
+		committed: map[Index]LogEntry{},
 		gens:      make([]int, n),
 		nodes:     make([]map[Index][]byte, n),
 		last:      make([]Index, n),
@@ -60,14 +59,14 @@ func (l *applyLog) record(i, gen int, msg ApplyMsg) {
 		l.t.Errorf("node %d applied index %d after index %d", i, msg.Index, l.last[i])
 	}
 	l.last[i] = msg.Index
-	if msg.Kind != EntryCommand {
-		return
+	entry := LogEntry{Term: msg.Term, Kind: msg.Kind, Command: msg.Command}
+	if prev, ok := l.committed[msg.Index]; ok && !entriesEqual(prev, entry) {
+		l.t.Errorf("State Machine Safety violated: index %d applied as %+v and as %+v", msg.Index, prev, entry)
 	}
-	if prev, ok := l.committed[msg.Index]; ok && !bytes.Equal(prev, msg.Command) {
-		l.t.Errorf("State Machine Safety violated: index %d applied as %q and as %q", msg.Index, prev, msg.Command)
+	l.committed[msg.Index] = entry
+	if msg.Kind == EntryCommand {
+		l.nodes[i][msg.Index] = msg.Command
 	}
-	l.committed[msg.Index] = msg.Command
-	l.nodes[i][msg.Index] = msg.Command
 }
 
 // checkLeaderCompleteness checks that a new leader's log holds every entry
@@ -75,10 +74,10 @@ func (l *applyLog) record(i, gen int, msg ApplyMsg) {
 func (l *applyLog) checkLeaderCompleteness(id NodeID, term Term, log []LogEntry) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	for i, cmd := range l.committed {
-		if int(i) >= len(log) || log[i].Kind != EntryCommand || !bytes.Equal(log[i].Command, cmd) {
-			l.t.Errorf("Leader Completeness violated: leader %s of term %d lacks committed entry %d %q",
-				id, term, i, cmd)
+	for i, entry := range l.committed {
+		if int(i) >= len(log) || !entriesEqual(log[i], entry) {
+			l.t.Errorf("Leader Completeness violated: leader %s of term %d lacks committed entry %d %+v",
+				id, term, i, entry)
 		}
 	}
 }
@@ -234,15 +233,17 @@ func TestCluster_BasicAgreement(t *testing.T) {
 		c := newTestCluster(t, 3)
 		c.waitLeader(t)
 
+		// The core preserves an ordered list of opaque strings, including
+		// empty/duplicate strings and text resembling higher-level commands.
+		want := []string{"", "строка 🛶", "строка 🛶", "SET x 1", "raftgo:kv:v1:{}"}
 		var prev Index
-		for k := range 3 {
-			index := c.one(t, fmt.Sprint("cmd", k), 3)
+		for k, cmd := range want {
+			index := c.one(t, cmd, 3)
 			if index <= prev {
 				t.Fatalf("command %d got index %d, not after %d", k, index, prev)
 			}
 			prev = index
 		}
-		want := []string{"cmd0", "cmd1", "cmd2"}
 		for i := range c.nodes {
 			if got := c.applied.appliedCommands(i); !slices.Equal(got, want) {
 				t.Fatalf("node %d applied %q, want %q", i, got, want)
