@@ -66,10 +66,11 @@ func TestClusterStatusPartialFixedMembership(t *testing.T) {
 		writeJSON(w, 200, map[string]any{"node": raft.ElectionStatus{ID: "wrong"}})
 	}))
 	defer bad.Close()
-	members := []Member{{ID: "local"}, {ID: "good", APIURL: good.URL}, {ID: "slow", APIURL: slow.URL}, {ID: "redirect", APIURL: redirect.URL}, {ID: "bad", APIURL: bad.URL}}
+	members := []Member{{ID: "local"}, {ID: "good", APIURL: "http://public-good.invalid", InternalAPIURL: good.URL}, {ID: "slow", APIURL: slow.URL}, {ID: "redirect", APIURL: redirect.URL}, {ID: "bad", APIURL: bad.URL}}
 	h := electionAPI(t, members).Handler()
 	// Mutating the caller's membership after constructing Handler cannot change its targets.
 	members[1].APIURL = target.URL
+	members[1].InternalAPIURL = target.URL
 	w := httptest.NewRecorder()
 	start := time.Now()
 	h.ServeHTTP(w, httptest.NewRequest("GET", "/cluster/status?url="+target.URL, nil))

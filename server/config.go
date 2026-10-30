@@ -16,7 +16,18 @@ type Member struct {
 	ID     raft.NodeID `json:"id"`
 	RPCURL string      `json:"rpc_url"`
 	APIURL string      `json:"api_url"`
+	// InternalAPIURL is optional: server-side UI requests may need a Docker DNS
+	// address while APIURL remains reachable by external clients following 307.
+	InternalAPIURL string `json:"internal_api_url,omitempty"`
 }
+
+func (m Member) apiEndpoint() string {
+	if m.InternalAPIURL != "" {
+		return m.InternalAPIURL
+	}
+	return m.APIURL
+}
+
 type Config struct {
 	Listen    string   `json:"listen"`
 	RPCListen string   `json:"rpc_listen"`
@@ -59,7 +70,11 @@ func (c Config) Validate(id raft.NodeID) error {
 			return fmt.Errorf("empty or duplicate member ID %q", m.ID)
 		}
 		seen[m.ID] = true
-		for _, address := range []string{m.RPCURL, m.APIURL} {
+		addresses := []string{m.RPCURL, m.APIURL}
+		if m.InternalAPIURL != "" && m.InternalAPIURL != m.APIURL {
+			addresses = append(addresses, m.InternalAPIURL)
+		}
+		for _, address := range addresses {
 			u, err := url.Parse(address)
 			if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
 				return fmt.Errorf("invalid base URL %q", address)
