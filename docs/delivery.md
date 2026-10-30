@@ -106,7 +106,7 @@ docker compose -p raftgo-scenarios -f scenarios/compose.yaml down
 | Результат | Принятый SHA | Go/race | Docker | UI | Статус |
 | --- | --- | --- | --- | --- | --- |
 | Полный исходник | `70782f23fe695d184981dff932c47181f9eadd21` | build/test/race/vet/gofmt пройдены при планировании | Не запускался | Отсутствует | Источник |
-| prepare/in-memory | — | — | — | Не требуется | Не начат |
+| prepare/in-memory | `4f6499180cb7c22d429507506431218a445be18b` | build/test/race/vet/gofmt PASS | task1–4, cleanup и полный сброс PASS | Не требуется | B0–B2 готовы |
 | stage/1-election | — | — | — | — | Не начат |
 | stage/2-log | — | — | — | — | Не начат |
 | stage/3-kv | — | — | — | — | Не начат |
@@ -258,3 +258,105 @@ exit=0 (вывод пуст)
 Проверенный результат B1: `983654e` (`task/B1-memory-storage`).
 Результат локально интегрирован fast-forward в `prepare/in-memory` вместе
 с этим журналом; task-ветка сохранена. Push не выполнялся.
+
+## B2 — приложение и стенды на памяти (2026-10-31)
+
+- Ветка `task/B2-memory-runtime`, база `prepare/in-memory` на
+  `af754ca729c1f3c9be5260afee762c9a7b655900`; отдельный worktree
+  `/home/bogdan/rafting-b2`. Проверенный код: `4f6499180cb7c22d429507506431218a445be18b`.
+- `cmd/raftgo/main.go` использует отдельную пустую `storage.Memory` на процесс.
+  Удалены `storage/file.go` и `storage/file_test.go`, дисковая настройка из
+  `server/config.go`, обоих JSON-конфигов и data volumes обоих Compose.
+  В основном Compose отключён автоматический restart: пустую память нельзя
+  незаметно возвращать под прежним ID в продолжающийся кластер.
+- `server/http_test.go` и `server/replay_test.go` используют Memory;
+  `server/config_test.go` дополнительно проверяет загрузку без data_dir и явный
+  отказ для старого дискового конфига. Failure-injection ядра сохранён без изменений.
+  `storage/memory.go` получил комментарий пакета, `.gitignore` больше не
+  описывает каталог состояния. README, onboarding, текущий статус в stages и
+  все сценарные README согласованы с безопасной памятью.
+- `scenarios/run.py`: pause/unpause вместо stop/start, пауза всего кластера в
+  task3/task4, исключение паузных процессов из выборки лидера, короткий timeout
+  диагностики, вывод ожиданий и диагностика при ошибке. Cleanup в finally
+  опрашивает Docker и снимает каждую фактическую паузу, даже после частичного
+  сбоя Docker-команды; ошибка одной ноды не мешает попыткам вернуть остальные.
+- Канбан: B2 готова. Далее доступна только S1-CORE; stage-ветки не создавались.
+
+Проверки выполнены с Go `go1.27.3-X:nodwarf5 linux/amd64`; `go.mod` не менялся.
+Фактические результаты после последних Go-изменений:
+
+```text
+$ go build ./...
+exit=0 (вывод пуст)
+
+$ go test -count=1 ./...
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv       0.002s
+ok  raftgo/raft     0.950s
+ok  raftgo/server   5.723s
+ok  raftgo/storage  0.003s
+?   raftgo/transport [no test files]
+exit=0
+
+$ go test -race -count=1 ./...
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv       1.007s
+ok  raftgo/raft     6.414s
+ok  raftgo/server   6.742s
+ok  raftgo/storage  1.012s
+?   raftgo/transport [no test files]
+exit=0
+
+$ go vet ./...
+exit=0 (вывод пуст; .golangci.yml отсутствует)
+
+$ gofmt -l .
+exit=0 (вывод пуст)
+
+$ git diff --check
+exit=0 (вывод пуст)
+
+$ python3 -m py_compile scenarios/run.py
+exit=0
+
+$ docker compose -p raftgo-scenarios -f scenarios/compose.yaml up -d --build
+exit=0 (пять контейнеров, образ собран Go 1.27.1 из Dockerfile)
+
+$ python3 scenarios/run.py all
+PASS task1
+PASS task2
+PASS task3
+PASS task4
+exit=0
+```
+
+Дополнительные фактические проверки:
+
+- Оба `docker compose ... config --format json`: exit=0. В каждом пять
+  сервисов, только read-only bind конфига, нет data volumes и автоперезапуска.
+- В отдельном процессе подменён task1: pause node1/node3, затем намеренный
+  `AssertionError`. Runner вывел диагностику (паузные ноды — timeout), вернул
+  ненулевой код и снял обе паузы. Docker inspect: все пять Running, ни одной
+  Paused, StartedAt всех процессов остался прежним. Проверочный harness exit=0:
+  `PASS cleanup: injected failure exit != 0; all five unpaused; no process restarted`.
+- Записано значение и захвачен lock с уникальным ключом. Docker inspect
+  подтвердил только read-only конфиг; docker diff содержит лишь каталоги и путь
+  монтирования `/etc/raftgo/cluster.json`, файлов состояния нет. Затем `down`
+  **всех** пяти нод и `up -d`: GET прежнего ключа — 404, на всех нодах в логах
+  только новые no-op. Harness exit=0:
+  `PASS full reset: no prior user log, KV, or locks; fresh cluster only has no-op entries`.
+- Поиск по Go-коду: нет `storage.Open`, `storage.File`, `DataDir`, `fsync`,
+  `raft.json` или `syscall.Flock`. Единственный `data_dir` — негативный тест
+  старого конфига. Исторические записи B0/B1 и текст карточек сохранены.
+
+При первом прогоне все task1–4 прошли свои проверки, но cleanup вернул ошибку
+Docker «container is not paused». Cleanup исправлен на опрос фактических пауз;
+приведённый выше повторный прогон полностью завершился с exit=0.
+
+Ограничения: это безопасная RAM в модели задания, не crash-recovery. Kill теряет
+память; fencing монотонен только внутри одной жизни кластера. UI ещё отсутствует
+и не проверялся, ни один stage этой карточкой не принимается. Сценарный стенд
+после проверок полностью удалён через down; запущенный чужой проект `rafting`
+не затронут. Исходный checkout не переключался, чужие файлы не коммитились.
+Локальная интеграция результата и этого журнала в `prepare/in-memory` выполняется
+fast-forward, task-ветка сохраняется. Push и изменения main не выполняются.
