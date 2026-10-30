@@ -684,3 +684,104 @@ exit=0
 S1-API готова без оставшихся препятствий; изменения сохраняются одним локальным
 коммитом в main. Снимки lab1–lab4 не создавались и не изменялись. Следующая
 доступная карточка — S1-UI; другие карточки, агенты и push не запускались.
+
+## S1-UI — экран выборов пяти узлов (2026-10-31)
+
+- Ветка `main`, база `95f1a2bb0ae31031fe5abb67458372a44c23b6dc`,
+  существующий чистый checkout `/home/bogdan/rafting`. S1-API готова.
+- `server/ui.go`, `server/ui/{index.html,election.css,election.js}` и подключение
+  в `server/http.go`: встроенный экран этапа 1 на `GET /`, карточки участников,
+  role/term/leader_id/voted_for/votes/quorum/running, обновление и время успеха.
+  Пустой голос не выводится из leader_id, votes видны только у Candidate.
+  Потерянные ответы сохраняют прежние данные с явной отметкой устаревания;
+  отсутствие ответа origin также старит карточки. Только текстовый вывод.
+- Same-origin `GET /cluster/status`: фиксированный состав, параллельный опрос,
+  общий дедлайн 600 мс и отмена запроса, частичный 200, `atomic:false`, no-store.
+  Сам узел читается напрямую; peers — через настроенные `api_url/status`.
+  Redirect и proxy окружения запрещены; query и состав из ответов игнорируются.
+  Ограничение тела 64 КиБ, проверяется ID участника. HTTP и RPC доступность
+  различаются, локальная роль не объявляется доказательством кворума.
+- `server/ui_test.go`: маршруты и ресурсы, 404/405, зависший peer, частичный
+  результат, время опроса, отказ от redirect/подмены состава, совпадение ID,
+  поля только выборов и сохранение HTML-подобных строк как данных.
+- `docs/api.md`: контракт агрегата, таймауты/устаревание и инструкция переноса
+  election UI в lab1 с заменой проекции на election-only Status. README,
+  docs/onboarding.md и docs/stages.md отражают наличие экрана; Kanban обновлён.
+  Полные core/API main сохранены. Снимки lab1–lab4 не создавались/не менялись.
+
+Среда: Go `go1.27.3-X:nodwarf5 linux/amd64`, Firefox `158.0.1`, X11.
+Go.mod не менялся, `.golangci.yml` отсутствует. Фактический успешный прогон:
+
+```text
+$ go test ./server -run 'TestElectionUI|TestClusterStatus' -count=1 -v
+PASS TestElectionUIRouting
+PASS TestClusterStatusPartialFixedMembership (0.60s)
+ok  raftgo/server 0.607s
+exit=0
+
+$ go build ./...
+exit=0 (вывод пуст)
+
+$ go test -count=1 ./...
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv       0.002s
+ok  raftgo/raft     0.915s
+ok  raftgo/server   6.331s
+ok  raftgo/storage  0.002s
+?   raftgo/transport [no test files]
+exit=0
+
+$ go test -race -count=1 ./...
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv       1.006s
+ok  raftgo/raft     6.049s
+ok  raftgo/server   7.461s
+ok  raftgo/storage  1.013s
+?   raftgo/transport [no test files]
+exit=0
+
+$ go vet ./...
+exit=0 (вывод пуст)
+
+$ gofmt -l .
+exit=0 (вывод пуст)
+
+$ git diff --check
+exit=0 (вывод пуст)
+```
+
+Первый адресный прогон обнаружил недостающий ApplyCh в конфигурации теста;
+исправлен только тест, после чего выполнены приведённые проверки.
+
+Ручной визуальный прогон в настоящем Firefox через Marionette: открыта страница,
+проверены отрисованные карточки и снимки экрана, нажата кнопка «Обновить».
+Стенд — пять отдельных Go-процессов, собранных из этого checkout, случайные
+локальные API/RPC-порты. Конфиги/бинарник/логи и harness находятся только в
+`/tmp/raftgo-s1-ui-*`; копии исходников и checkout не создавались.
+Паузы — SIGSTOP/SIGCONT с сохранением PID и RAM, без stop/start.
+
+```text
+PASS five cards; leader node5, term 1; origin node1
+PASS pause leader node5 -> node4, term 2
+PASS no quorum: node2/node3/node5 paused, three stale cards;
+     live node1 Candidate term 5, votes 2 / quorum 3; no live Leader
+PASS unpause, five fresh cards, all browser requests same origin
+PASS origin unavailable: five stale cards, browser request timeout
+PASS refresh button; HTML strings displayed literally, no DOM injection
+PASS narrow viewport: no horizontal overflow
+PASS cleanup: all five test node PIDs exited and reaped
+```
+
+Проверка HTML использовала временную подмену fetch в тестовой вкладке: ID с
+`<img onerror=...>`, leader_id с `<b>` и voted_for с `<script>` видны буквально,
+внутри карточек не появились img/b/script, JS-маркер не сработал. После проверки
+fetch восстановлен, страница перезагружена. В Resource Timing все URL одного
+origin; CORS-заголовки и прямой браузерный доступ к peer-портам не требовались.
+Визуально просмотрены desktop, потеря кворума, HTML-строки и узкий экран;
+снимки `/tmp/raftgo-s1-ui-{normal,no-quorum,text,mobile}.png`.
+Тестовый Firefox закрыт. Чужие процессы/стенды не изменялись.
+
+Все критерии S1-UI выполнены, карточка готова. Следующий доступный ID —
+S1-DEMO; он не запускался. Приёмка/выделение lab1 остаются отдельным поручением.
+Ветки не переключались, другие агенты/карточки и push не запускались,
+контроллер и его состояние не изменялись. Препятствий к сдаче S1-UI нет.
