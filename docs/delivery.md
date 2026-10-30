@@ -194,3 +194,63 @@ PASS task4
 B0 готова: результат `task/B0-baseline` — `8bdb98d348ef111d0fec03a34af727e1fd4241e2`;
 локально интегрирован в `prepare/in-memory`. Task-ветка сохранена.
 Стенд остановлен через `down`, volumes сохранены. Push не выполнялся.
+
+
+## B1 — Memory Storage (2026-10-31)
+
+- Ветка `task/B1-memory-storage`, база `prepare/in-memory` на
+  `7121e6e6684441b89efe6c2fc9e542f6cac1331b`; отдельный worktree
+  `/home/bogdan/rafting-b1`. Исходный checkout и чужие изменения сохранены.
+- Добавлен `storage/memory.go`: готовый к работе нулевой `Memory`, mutex,
+  синхронные атомарные операции, глубокие копии срезов и command bytes,
+  замена/усечение суффикса и ошибка неверного индекса без изменения данных.
+- В `storage/file.go` только уточнён комментарий пакета и перенесён общий
+  `cloneLog` в `memory.go`; поведение файлового backend сохранено.
+  В `raft/storage.go` обновлён контракт безопасной памяти, ошибок и копирования.
+- `storage/memory_test.go` проверяет границы (включая максимальный индекс),
+  пустой лог, append/truncate/replace, отсутствие aliasing, конкурентные
+  load/save и отсутствие частично видимых state/log. Новый Raft с тем же
+  Memory сохраняет term/голос/лог, отклоняет второй голос в term,
+  несовпадающий префикс и кандидата с устаревшим логом; замена хвоста также
+  переживает повторное создание Raft. Использованы fake-транспорт и часы
+  без реального времени, сна и опроса условий.
+- Канбан: B1 готова. Следующая доступная карточка — B2.
+
+Фактические проверки в worktree B1 (`go.mod` не менялся):
+
+```text
+$ go build ./...
+exit=0 (вывод пуст)
+
+$ go test -count=1 ./...
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv       0.003s
+ok  raftgo/raft     1.061s
+ok  raftgo/server   5.709s
+ok  raftgo/storage  0.005s
+?   raftgo/transport [no test files]
+exit=0
+
+$ go test -race -count=1 ./...
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv       1.008s
+ok  raftgo/raft     6.406s
+ok  raftgo/server   6.735s
+ok  raftgo/storage  1.017s
+?   raftgo/transport [no test files]
+exit=0
+
+$ go vet ./...
+exit=0 (вывод пуст; .golangci.yml отсутствует)
+
+$ gofmt -l .
+exit=0 (вывод пуст)
+
+$ git diff --check
+exit=0 (вывод пуст)
+```
+
+Ограничения: приложение пока использует File, переключение и удаление дисковых
+настроек выполняются только в B2. Memory не переживает завершение процесса;
+симулируемый перезапуск использует тот же объект. Docker/UI в B1 не запускались:
+это не приёмка этапа, wiring и сценарии не изменены, UI ещё отсутствует.

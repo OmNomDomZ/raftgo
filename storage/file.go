@@ -1,4 +1,4 @@
-// Package storage provides durable storage for a single node per directory.
+// Package storage provides Raft storage backends.
 package storage
 
 import (
@@ -60,15 +60,6 @@ func Open(dir string) (*File, error) {
 }
 
 func (f *File) Close() error { return f.lock.Close() }
-
-func cloneLog(entries []raft.LogEntry) []raft.LogEntry {
-	out := make([]raft.LogEntry, len(entries))
-	for i, e := range entries {
-		out[i] = e
-		out[i].Command = append([]byte(nil), e.Command...)
-	}
-	return out
-}
 
 func (f *File) LoadState() (raft.PersistentState, error) {
 	f.mu.Lock()
