@@ -12,8 +12,7 @@ import (
 	"raftgo/raft"
 )
 
-// These resources depend only on the election schema. In lab1 use the
-// election-only Status directly instead of Status.Election(), retaining no log code.
+// Election cards use the bounded election projection of the local status.
 //
 //go:embed ui/*
 var electionAssets embed.FS

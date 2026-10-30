@@ -54,7 +54,7 @@ func (l *applyLog) record(i, gen int, msg ApplyMsg) {
 		return
 	}
 	// Without gaps, so a state machine can tell when it has applied through
-	// any index, e.g. one returned by ReadIndex.
+	// any committed index, including a no-op.
 	if msg.Index != l.last[i]+1 {
 		l.t.Errorf("node %d applied index %d after index %d", i, msg.Index, l.last[i])
 	}
@@ -235,7 +235,7 @@ func TestCluster_BasicAgreement(t *testing.T) {
 
 		// The core preserves an ordered list of opaque strings, including
 		// empty/duplicate strings and text resembling higher-level commands.
-		want := []string{"", "строка 🛶", "строка 🛶", "SET x 1", "raftgo:kv:v1:{}"}
+		want := []string{"", "строка 🛶", "строка 🛶", "SET x 1", "opaque:payload:{}"}
 		var prev Index
 		for k, cmd := range want {
 			index := c.one(t, cmd, 3)

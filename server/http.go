@@ -8,8 +8,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"raftgo/kv"
-	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -25,13 +23,11 @@ type API struct {
 	mu      sync.Mutex
 	applied raft.Index
 	changed chan struct{}
-	store   *kv.Store
-	results map[raft.Index]appliedResult
 	logger  *slog.Logger
 }
 
 func NewAPI(node *raft.Raft, members []Member) *API {
-	return &API{Node: node, Members: members, changed: make(chan struct{}), store: kv.New(), results: make(map[raft.Index]appliedResult), logger: slog.Default().With("node", node.Status().ID)}
+	return &API{Node: node, Members: members, changed: make(chan struct{}), logger: slog.Default().With("node", node.Status().ID)}
 }
 
 // Consume must run for the lifetime of the node, including during restart replay.
@@ -45,15 +41,6 @@ func (a *API) Consume(ctx context.Context, ch <-chan raft.ApplyMsg) {
 				return
 			}
 			a.mu.Lock()
-			if msg.Kind == raft.EntryCommand && strings.HasPrefix(string(msg.Command), kv.Prefix) {
-				var c kv.Command
-				result := kv.Result{Code: 400, Error: "invalid KV command"}
-				if err := json.Unmarshal(msg.Command[len(kv.Prefix):], &c); err == nil {
-					result = a.store.Apply(c, uint64(msg.Index))
-				}
-				a.results[msg.Index] = appliedResult{msg.Term, result}
-				a.logger.Debug("kv applied", "index", msg.Index, "term", msg.Term, "op", c.Op, "status", result.Code)
-			}
 			a.logger.Debug("entry applied", "index", msg.Index, "term", msg.Term, "kind", msg.Kind)
 			a.applied = msg.Index
 			close(a.changed)
@@ -127,9 +114,6 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("GET /election", status)
 	mux.HandleFunc("GET /log", status)
 	mux.HandleFunc("POST /entries", a.appendEntry)
-	for _, pattern := range []string{"GET /kv/{key}", "POST /kv/{key}", "PUT /kv/{key}", "DELETE /kv/{key}", "POST /kv/{key}/cas", "POST /kv/{key}/lock", "DELETE /kv/{key}/lock"} {
-		mux.HandleFunc(pattern, a.kvRequest)
-	}
 	return a.trace(mux)
 }
 func (a *API) failure(w http.ResponseWriter, r *http.Request, err error) {
@@ -165,10 +149,6 @@ func (a *API) appendEntry(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Command == nil || len(*body.Command) > MaxCommandBytes {
 		problem(w, 400, "command is required and must be at most 65536 bytes")
-		return
-	}
-	if strings.HasPrefix(*body.Command, kv.Prefix) {
-		problem(w, 400, "reserved command prefix")
 		return
 	}
 	index, term, err := a.Node.Start([]byte(*body.Command))

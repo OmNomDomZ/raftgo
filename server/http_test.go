@@ -130,55 +130,6 @@ func TestHTTPClusterCommitRedirectFailover(t *testing.T) {
 		return true
 	})
 
-	kvCall := func(i int, method, path, body, token string, want int) map[string]any {
-		t.Helper()
-		req, err := http.NewRequest(method, members[i].APIURL+path, bytes.NewBufferString(body))
-		if err != nil {
-			t.Fatal(err)
-		}
-		req.Header.Set("X-Lock-Token", token)
-		resp, err := client.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer resp.Body.Close()
-		var result map[string]any
-		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-			t.Fatal(err)
-		}
-		if resp.StatusCode != want {
-			t.Fatalf("%s %s: got %d want %d: %v", method, path, resp.StatusCode, want, result)
-		}
-		return result
-	}
-	kvCall(follower, "PUT", "/kv/x", `{"value":"a"}`, "", 307)
-	kvCall(leader, "POST", "/kv/x", `{"value":"a"}`, "", 201)
-	kvCall(leader, "POST", "/kv/x/cas", `{"expected":"wrong","value":"bad"}`, "", 409)
-	// Concurrent CAS operations share one expected value: only one may succeed.
-	codes := make(chan int, 2)
-	for _, value := range []string{"b", "c"} {
-		go func(value string) {
-			resp, err := client.Post(members[leader].APIURL+"/kv/x/cas", "application/json", bytes.NewBufferString(fmt.Sprintf(`{"expected":"a","value":%q}`, value)))
-			if err != nil {
-				codes <- 0
-				return
-			}
-			resp.Body.Close()
-			codes <- resp.StatusCode
-		}(value)
-	}
-	first, second := <-codes, <-codes
-	if !((first == 200 && second == 409) || (first == 409 && second == 200)) {
-		t.Fatalf("CAS race: %d %d", first, second)
-	}
-	lock := kvCall(leader, "POST", "/kv/x/lock", "", "", 201)
-	token := lock["token"].(string)
-	kvCall(leader, "PUT", "/kv/x", `{"value":"bad"}`, "", 423)
-	kvCall(leader, "PUT", "/kv/x", `{"value":"protected"}`, token, 200)
-	kvCall(leader, "GET", "/kv/x", "", "", 423)
-	if got := kvCall(leader, "GET", "/kv/x", "", token, 200); got["value"] != "protected" {
-		t.Fatal(got)
-	}
 	cancels[leader]()
 	<-done[leader]
 	old := leader
@@ -197,19 +148,6 @@ func TestHTTPClusterCommitRedirectFailover(t *testing.T) {
 	if resp.StatusCode != 201 {
 		t.Fatalf("failover append: %d", resp.StatusCode)
 	}
-	kvCall(leader, "PUT", "/kv/x", `{"value":"bad"}`, "", 423)
-	if got := kvCall(leader, "GET", "/kv/x", "", token, 200); got["value"] != "protected" {
-		t.Fatal(got)
-	}
-	kvCall(leader, "DELETE", "/kv/x/lock", "", token, 200)
-	nextLock := kvCall(leader, "POST", "/kv/x/lock", "", "", 201)["token"].(string)
-	if token == nextLock {
-		t.Fatal("lock token reused after failover")
-	}
-	kvCall(leader, "DELETE", "/kv/x/lock", "", token, 423)
-	kvCall(leader, "DELETE", "/kv/x/lock", "", nextLock, 200)
-	kvCall(leader, "DELETE", "/kv/x", "", "", 200)
-	kvCall(leader, "GET", "/kv/x", "", "", 404)
 	// With only two of five nodes alive, no write may be reported committed.
 	alive := 0
 	for i := range count {
@@ -226,22 +164,6 @@ func TestHTTPClusterCommitRedirectFailover(t *testing.T) {
 	if resp.StatusCode == 201 {
 		t.Fatal("minority committed a write")
 	}
-
-	// A minority cannot confirm a KV write or serve a linearizable read.
-	for _, method := range []string{"PUT", "GET"} {
-		req, err := http.NewRequest(method, members[leader].APIURL+"/kv/minority", bytes.NewBufferString(`{"value":"uncommitted"}`))
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp.Body.Close()
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			t.Fatalf("minority served %s: %d", method, resp.StatusCode)
-		}
-	}
 }
 
 func TestAPIValidationAndLocalReads(t *testing.T) {
@@ -251,7 +173,7 @@ func TestAPIValidationAndLocalReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := NewAPI(node, nil).Handler()
-	for _, body := range []string{`{}`, `null`, `{"command":3}`, `{"command":"x","extra":1}`, `{"command":"x"} {}`, `{"command":"raftgo:kv:v1:{}"}`} {
+	for _, body := range []string{`{}`, `null`, `{"command":3}`, `{"command":"x","extra":1}`, `{"command":"x"} {}`} {
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, httptest.NewRequest("POST", "/entries", bytes.NewBufferString(body)))
 		if w.Code != 400 {

@@ -17,14 +17,14 @@ func TestSendAppendEntries_LostReplyRetriesStoredEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 	leader.mu.Lock()
-	args, round := leader.appendEntriesArgsLocked("B")
+	args := leader.appendEntriesArgsLocked("B")
 	leader.mu.Unlock()
 
 	// Deliver the request, then lose only its reply. The follower has stored
 	// it, but the leader must not count the missing acknowledgement.
 	calls := 0
 	tr.setDrop(func() bool { calls++; return calls == 2 })
-	if leader.sendAppendEntries(context.Background(), "B", args, round) {
+	if leader.sendAppendEntries(context.Background(), "B", args) {
 		t.Fatal("lost reply requested an immediate retry")
 	}
 	if calls != 2 || len(st.storedLog()) != int(index) {
@@ -35,14 +35,14 @@ func TestSendAppendEntries_LostReplyRetriesStoredEntry(t *testing.T) {
 	}
 	writes := st.logWriteCount()
 	tr.setDrop(nil)
-	leader.sendAppendEntries(context.Background(), "B", args, round)
+	leader.sendAppendEntries(context.Background(), "B", args)
 	if commitIndex(leader) != index || st.logWriteCount() != writes {
 		t.Fatal("retry failed to commit or rewrote the stored entry")
 	}
 	leader.mu.Lock()
-	heartbeat, round := leader.appendEntriesArgsLocked("B")
+	heartbeat := leader.appendEntriesArgsLocked("B")
 	leader.mu.Unlock()
-	leader.sendAppendEntries(context.Background(), "B", heartbeat, round)
+	leader.sendAppendEntries(context.Background(), "B", heartbeat)
 	_, log := follower.InspectLog()
 	if commitIndex(follower) != index || len(log) != 1 || !entriesEqual(log[0], cmdEntry(term, "повтор")) {
 		t.Fatalf("retry changed the command or its position: %+v", log)

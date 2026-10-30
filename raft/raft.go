@@ -290,12 +290,6 @@ type Raft struct {
 	// they had matched, so a broken peer is logged once per term instead of
 	// on every heartbeat.
 	mismatchLogged map[NodeID]struct{}
-	// readRound numbers the requests to confirm leadership for reads, and
-	// ackedRound is the latest round each peer has answered in this term.
-	// reads are the ReadIndex calls waiting on them; see read.go.
-	readRound  uint64
-	ackedRound map[NodeID]uint64
-	reads      []*pendingRead
 }
 
 // New creates a node, restoring its term and vote from cfg.Storage if a
@@ -445,8 +439,6 @@ func (rf *Raft) initLeaderStateLocked() {
 	}
 	rf.heardFrom = make(map[NodeID]struct{}, len(rf.peers))
 	rf.mismatchLogged = make(map[NodeID]struct{})
-	rf.readRound = 0
-	rf.ackedRound = make(map[NodeID]uint64, len(rf.peers))
 }
 
 // adoptHigherTermLocked moves to a newer term and steps down (§5.1). It does
@@ -497,7 +489,6 @@ func (rf *Raft) stepDownLocked() {
 	rf.heartbeatTimer.Stop()
 	rf.resetElectionTimerLocked()
 	rf.cancelRPCsLocked()
-	rf.failReadsLocked(rf.notLeaderErrLocked())
 }
 
 func (rf *Raft) resetElectionTimerLocked() {

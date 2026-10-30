@@ -6,8 +6,8 @@ import "context"
 //
 // Every committed entry is sent, in log order and without gaps, including
 // those that carry no command, such as a new leader's no-op: the state
-// machine must be able to tell when it has applied through any index, e.g.
-// one returned by ReadIndex. A restarted node starts over from index 1, so
+// machine must be able to tell when it has applied through any index.
+// A restarted node starts over from index 1, so
 // the state machine must be rebuilt from scratch, not resumed.
 type ApplyMsg struct {
 	Index Index

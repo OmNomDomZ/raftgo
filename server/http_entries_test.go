@@ -67,7 +67,7 @@ func TestHTTPEntriesStringsAndValidation(t *testing.T) {
 			}
 		}
 		oversized, _ := json.Marshal(map[string]string{"command": strings.Repeat("я", MaxCommandBytes/2) + "x"})
-		for _, body := range []string{"", "{", "[]", "null", `{}`, `{"command":null}`, `{"command":1}`, `{"command":"x","extra":true}`, `{"command":"x"} {}`, `{"command":"raftgo:kv:v1:{}"}`, "{\"command\":\"\xff\"}", string(oversized), strings.Repeat(" ", 6*MaxCommandBytes+129)} {
+		for _, body := range []string{"", "{", "[]", "null", `{}`, `{"command":null}`, `{"command":1}`, `{"command":"x","extra":true}`, `{"command":"x"} {}`, "{\"command\":\"\xff\"}", string(oversized), strings.Repeat(" ", 6*MaxCommandBytes+129)} {
 			before, _ := api.Node.InspectLog()
 			w := entryRequest(h, body)
 			after, _ := api.Node.InspectLog()

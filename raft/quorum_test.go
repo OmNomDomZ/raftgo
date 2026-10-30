@@ -32,9 +32,9 @@ func newTestLeader(t *testing.T, term Term, commit Index, entries ...LogEntry) *
 // replicateTo sends peer the AppendEntries its replicator would send next.
 func replicateTo(rf *Raft, peer NodeID) {
 	rf.mu.Lock()
-	args, round := rf.appendEntriesArgsLocked(peer)
+	args := rf.appendEntriesArgsLocked(peer)
 	rf.mu.Unlock()
-	rf.sendAppendEntries(context.Background(), peer, args, round)
+	rf.sendAppendEntries(context.Background(), peer, args)
 }
 
 func TestCheckQuorum_StepsDownWithoutQuorum(t *testing.T) {
