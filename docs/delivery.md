@@ -20,7 +20,8 @@ main: полный код + Memory + инфраструктура + канбан
 как история. `stage/1-election` содержит уже выделенное ядро S1-CORE; использовать
 его как источник при подготовке lab1, не заменять им полную реализацию main.
 Исторические отчёты ниже описывают прежний процесс, их пути не инструкции запуска.
-Ни один labN пока не принят; не создавать их заранее из полного main.
+`lab1` принят в S1-DEMO на `a2f486172f435f2e469802935ecec43048abee69`.
+`lab2`–`lab4` пока не приняты; не создавать их заранее из полного main.
 
 ## Задание агенту и очередь
 
@@ -107,13 +108,13 @@ docker compose -p raftgo-scenarios -f scenarios/compose.yaml down
 
 ## Реестр приёмки
 
-Пока заполнен только источник; ни один новый этап не принят.
+Этап 1 принят; остальные строки заполняются после соответствующих DEMO.
 
 | Результат | Принятый SHA | Go/race | Docker | UI | Статус |
 | --- | --- | --- | --- | --- | --- |
 | Полный исходник | `70782f23fe695d184981dff932c47181f9eadd21` | build/test/race/vet/gofmt пройдены при планировании | Не запускался | Отсутствует | Источник |
 | prepare/in-memory | `4f6499180cb7c22d429507506431218a445be18b` | build/test/race/vet/gofmt PASS | task1–4, cleanup и полный сброс PASS | Не требуется | B0–B2 готовы |
-| lab1 | — | — | — | — | Не начат |
+| lab1 | `a2f486172f435f2e469802935ecec43048abee69` | build/test/race/vet/gofmt PASS | task1 и cleanup PASS | Firefox PASS | S1-DEMO готова |
 | lab2 | — | — | — | — | Не начат |
 | lab3 | — | — | — | — | Не начат |
 | lab4 | — | — | — | — | Не начат |
@@ -785,3 +786,151 @@ origin; CORS-заголовки и прямой браузерный досту�
 S1-DEMO; он не запускался. Приёмка/выделение lab1 остаются отдельным поручением.
 Ветки не переключались, другие агенты/карточки и push не запускались,
 контроллер и его состояние не изменялись. Препятствий к сдаче S1-UI нет.
+
+## S1-DEMO — приёмка выборов и lab1 (2026-10-31)
+
+- Исходный чистый `main`: `06462d73d8a2a8f589ff0c38107c27cb1528dd6a`.
+  Зависимости S1-CORE/S1-API/S1-UI готовы. Статус «В работе» сохранён локальным
+  коммитом `a8fe349`; это точная база `snapshot/lab1`, созданной в том же
+  checkout `/home/bogdan/rafting`. Другие checkout/ветки разработки не создавались.
+- Кандидат и принятый `lab1`: `a2f486172f435f2e469802935ecec43048abee69`.
+  Ядро `raft/`, `storage/`, `cmd/raftgo/` и election-only HTTP взяты из S1-CORE
+  `e2b144b` с выбранными файлами. Перенесены UI и тесты диагностики из main,
+  Status содержит ровно восемь полей. Внедрение Clock/Transport и safety-тесты
+  сохранены; HTTP-тесты ролей/голосов адаптированы без ApplyCh/логовой проекции.
+- Файлы снимка: `raft/` (выборы/heartbeat, без пользовательского лога,
+  репликации, no-op, commit/apply и ReadIndex), `storage/memory{,_test}.go`
+  (только term/голос), `server/http{,_test,_election_test}.go`,
+  `server/ui{,_test}.go`, `cmd/raftgo/main.go`, `config/cluster.json`,
+  `scenarios/{cluster.json,run.py,README.md,task1/README.md}`, README, AGENTS,
+  `docs/api.md`, `.gitignore`. Удалены kv, будущие server-файлы/тесты,
+  task2–4, внешний dashboard, autokanban/tools, доска и документы старого
+  процесса. `docs/stages.md` сохранён как контракт. Личные .obsidian и кэши
+  исключены из принятого дерева; локальные файлы пользователя сохранены.
+- В обоих Docker-конфигах снимка `api_url` заменены на внутренние
+  `http://nodeN:8080`: серверный агрегатор должен обращаться к контейнерам,
+  а не к loopback опубликованных портов хоста. В task1 добавлена общая
+  pause/unpause с проверкой container ID/PID/StartedAt, неубывания term
+  и сохранения voted_for в том же term. Лист ручного показа дополнен.
+- Main сохранил весь код лога/KV/CAS/lock и полный набор тестов. В main
+  изменены только Kanban, README, docs/tasks и этот журнал; изменения
+  снимка обратно не мержились. lab2–4 и исторические ветки не перемещались.
+
+Среда: Go `go1.27.3-X:nodwarf5 linux/amd64`, Docker `29.9.2`, Compose `5.6.1`,
+настоящий Firefox `158.0.1` на X11. Go.mod не менялся; `.golangci.yml` нет.
+Обязательные проверки выполнены на точном SHA кандидата; реальные результаты:
+
+```text
+$ go build ./...
+exit=0 (вывод пуст)
+$ go test -count=1 ./...
+?    raftgo/cmd/raftgo [no test files]
+ok   raftgo/raft      0.220s
+ok   raftgo/server    0.607s
+ok   raftgo/storage   0.002s
+?    raftgo/transport [no test files]
+exit=0
+$ go test -race -count=1 ./...
+?    raftgo/cmd/raftgo [no test files]
+ok   raftgo/raft      2.060s
+ok   raftgo/server    1.627s
+ok   raftgo/storage   1.011s
+?    raftgo/transport [no test files]
+exit=0
+$ go vet ./...
+exit=0 (вывод пуст)
+$ gofmt -l .
+exit=0 (вывод пуст)
+$ git diff --check
+exit=0 (вывод пуст)
+$ go test ./server ./raft -run 'TestHTTPElection|TestElectionStatus' -count=100
+ok   raftgo/server 0.095s
+ok   raftgo/raft   0.041s
+exit=0
+```
+
+Docker собран из кандидата и проверен отдельно от существующего проекта rafting:
+
+```text
+$ docker compose -p raftgo-scenarios -f scenarios/compose.yaml up -d --build
+exit=0 (пять контейнеров)
+$ python3 scenarios/run.py all
+PASS task1
+exit=0
+PASS all five nodes: eight election fields, future routes 404 for all tested methods
+PASS tracked snapshot tree: future packages, scenarios and controller absent
+PASS runner finally cleanup after injected exception: no paused containers
+```
+
+Task1 проверил согласие term/лидера, pause лидера → новый term, возврат Follower,
+пять секунд без лидера в меньшинстве, общую паузу с теми же процессами и RAM.
+На всех пяти узлах проверены точные поля обоих alias и 404 на GET/POST/PUT/DELETE
+для /entries, /log, /kv/x, /kv/x/cas, /kv/x/lock. Просмотрены исходники и дерево:
+нет реализации будущих функций, флагов их скрытия и будущих сценариев.
+Остались только стандартные нулевые LastLogIndex/LastLogTerm в RequestVote;
+heartbeat не содержит записей. Проверки отсутствия маршрутов не удалялись.
+Cleanup дополнительно проверен через намеренное исключение после pause node5:
+runner напечатал диагностику, пробросил исключение и снял паузу в finally.
+
+Ручная визуальная проверка через Marionette в отдельном настоящем Firefox
+на Docker-кандидате (изображения просмотрены агентом):
+
+```text
+PASS five fresh cards, leader node1
+PASS leader failover node1 -> node4
+PASS old leader rejoins as follower
+PASS minority: three stale cards, no live leader
+PASS refresh button; all browser requests same origin
+PASS origin unavailable: five stale cards
+```
+
+В меньшинстве node2/node5 — Candidate, term 12, у node5 votes=2, quorum=3;
+старые данные трёх паузных узлов помечены недоступными/устаревшими.
+После восстановления снова пять свежих карточек. Неназначенный голос node1
+отображается «не отдан», даже когда известен лидер node2. Снимки экрана и логи:
+`/tmp/raftgo-s1-demo-{normal,failover,minority,origin}.png`,
+`/tmp/raftgo-s1-demo-{go,build,task1,browser}.log` (вне репозитория).
+Первый браузерный harness прервался на `compose unpause` всех сервисов:
+Docker отказал для уже работающего контейнера. Harness исправлен на выбор
+только паузных сервисов через `ps --status paused`; повторный прогон успешен.
+Production-код/кандидат при исправлении harness не менялись.
+
+После проверок сняты все паузы; `compose down` удалил только пять тестовых
+контейнеров и сеть. Тестовый Firefox закрыт. Существующий проект `rafting`
+с пятью контейнерами не изменялся. После успешных проверок создан lab1 на
+точном SHA, checkout возвращён в main. Временная snapshot/lab1 сохранена для
+аудита. Push, другие карточки и агенты не запускались. Ограничений приёмки нет;
+это тестовая проверка свойств, а не формальное доказательство всех исполнений.
+Следующий доступный ID — S2-CORE, его выполнение не запускалось.
+
+После возврата в main повторён полный обязательный набор (код main не менялся):
+
+```text
+$ go build ./...
+exit=0
+$ go test -count=1 ./...
+?   	raftgo/cmd/raftgo	[no test files]
+ok  	raftgo/kv	0.001s
+ok  	raftgo/raft	0.937s
+ok  	raftgo/server	6.419s
+ok  	raftgo/storage	0.002s
+?   	raftgo/transport	[no test files]
+exit=0
+$ go test -race -count=1 ./...
+?   	raftgo/cmd/raftgo	[no test files]
+ok  	raftgo/kv	1.009s
+ok  	raftgo/raft	6.392s
+ok  	raftgo/server	7.478s
+ok  	raftgo/storage	1.014s
+?   	raftgo/transport	[no test files]
+exit=0
+$ go vet ./...
+exit=0
+$ gofmt -l .
+exit=0
+$ git diff --check
+exit=0
+```
+
+Все команды завершились с exit=0; gofmt и diff --check без вывода.
+Доска отмечена «Готово», изменения отчёта сохранены локальным коммитом main.
