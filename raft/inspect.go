@@ -3,6 +3,9 @@ package raft
 import "slices"
 
 // Status is a local observation, not proof of current leadership.
+// VotedFor is this node's vote in Term, or "" if it has not voted.
+// Votes counts distinct grants (including self) only while Candidate;
+// zero for other roles does not describe their election history.
 type Status struct {
 	ID           NodeID `json:"id"`
 	Role         string `json:"role"`
@@ -14,6 +17,28 @@ type Status struct {
 	CommitIndex  Index  `json:"commit_index"`
 	LastLogIndex Index  `json:"last_log_index"`
 	Running      bool   `json:"running"`
+}
+
+// ElectionStatus is the election-only diagnostic schema for the lab1 snapshot.
+// Keep log diagnostics in Status in main; extracting lab1 must also remove the
+// log implementation and routes, not just project their fields away.
+type ElectionStatus struct {
+	ID       NodeID `json:"id"`
+	Role     string `json:"role"`
+	Term     Term   `json:"term"`
+	LeaderID NodeID `json:"leader_id"`
+	VotedFor NodeID `json:"voted_for"`
+	Votes    int    `json:"votes"`
+	Quorum   int    `json:"quorum"`
+	Running  bool   `json:"running"`
+}
+
+// Election projects the same local observation without log fields.
+func (s Status) Election() ElectionStatus {
+	return ElectionStatus{
+		ID: s.ID, Role: s.Role, Term: s.Term, LeaderID: s.LeaderID,
+		VotedFor: s.VotedFor, Votes: s.Votes, Quorum: s.Quorum, Running: s.Running,
+	}
 }
 
 func (rf *Raft) statusLocked() Status {

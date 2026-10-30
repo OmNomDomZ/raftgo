@@ -533,3 +533,154 @@ PID follower, проверка значения и завершения всех
 Ограничения: живой Codex не запускался, новые карточки не исполнялись;
 Docker-сценарии/ручной UI лабораторных не повторялись, lab1–lab4 ещё не приняты
 и не созданы. Доступный следующий ID — S1-API, теперь от main.
+
+## S1-API — диагностика выборов (2026-10-31)
+
+- Ветка `main`, база `186206964a7b457f235428f6b7ddf20958ceaea2`, существующий
+  checkout `/home/bogdan/rafting`. Он был чистым; зависимость S1-CORE готова.
+  Реализация и проверки завершены; после снятия ограничения записи в Git
+  карточка отмечена «Готово». Следующий доступный ID — S1-UI; его выполнение
+  не запускалось.
+- `raft/inspect.go`: выделены `ElectionStatus` и `Status.Election()` — контракт
+  восьми полей выборов для переноса в lab1. Уточнены комментарии о voted_for
+  текущего term и votes только кандидата. Полный Status и оба HTTP alias в
+  main, InspectLog и все log/CRUD/CAS/lock API сохранены.
+- `raft/inspect_test.go`: Election Safety при повторном grant одного peer,
+  проверка обнуления диагностического votes после избрания/смены term,
+  отсутствие выдуманного voted_for по leader_id; точный JSON представления
+  выборов без логовых полей, включая нулевые значения.
+- `server/http_election_test.go`: оба alias проверены для начального и
+  работающего follower, кандидата с одним/двумя голосами, лидера, остановленного
+  узла; проверены node/members, точный набор полей полного main и одинаковые
+  ответы alias. Через RPC HTTP повторный голос тому же кандидату разрешён,
+  другому в этом term отказано. Проверены same-term stepdown с сохранённым
+  voted_for, старший term без выдуманного голоса, GET/HEAD с query string,
+  405/Allow для других методов и 404 неизвестных путей. Время виртуальное
+  (`testing/synctest`), транспорт управляемый, без реальной сети.
+- `docs/api.md` и ссылка из `README.md`: локальность, неатомарность опроса
+  кластера, точная семантика полей и методов, отсутствие истории голосов,
+  порядок выделения lab1 в S1-DEMO. `Kanban.md` обновлён.
+
+Фактическая среда: `go version go1.27.3-X:nodwarf5 linux/amd64`.
+`go.mod` не менялся, `.golangci.yml` отсутствует. Стандартный Go-кэш недоступен
+для записи в sandbox: первая попытка адресных тестов завершилась setup failed
+с `read-only file system`. Все приведённые успешные Go-команды выполнены с
+`GOCACHE=/tmp/raftgo-s1-api-go-cache`. В первом адресном прогоне тест отправлял
+неверное имя RPC-поля `candidate_id` (400); исправлен на сериализацию штатного
+RequestVoteArgs, production RPC не менялся.
+
+```text
+$ go test ./server ./raft -run 'TestHTTPElection|TestElectionStatus' -count=1 -v
+PASS TestHTTPElectionRolesAndVotes
+PASS TestHTTPElectionRouting
+ok  raftgo/server 0.006s
+PASS TestElectionStatusDuplicateGrantsAndStepdown
+PASS TestElectionStatusJSONSchema
+ok  raftgo/raft 0.003s
+exit=0
+
+$ go test ./server ./raft -run 'TestHTTPElection|TestElectionStatus' -count=100
+ok  raftgo/server 0.179s
+ok  raftgo/raft   0.117s
+exit=0
+
+$ go build ./...
+exit=0 (вывод пуст)
+
+$ go test -count=1 ./...
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv       0.003s
+ok  raftgo/raft     1.299s
+ok  raftgo/server   5.785s
+ok  raftgo/storage  0.004s
+?   raftgo/transport [no test files]
+exit=0
+
+$ go test -race -count=1 ./...
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv       1.006s
+ok  raftgo/raft     6.277s
+ok  raftgo/server   6.864s
+ok  raftgo/storage  1.012s
+?   raftgo/transport [no test files]
+exit=0
+
+$ go vet ./...
+exit=0 (вывод пуст)
+
+$ gofmt -l .
+exit=0 (вывод пуст)
+
+$ git diff --check
+exit=0 (вывод пуст)
+```
+
+Обязательные проверки доступны и пройдены. Это сдача S1-API в main;
+создание lab1, проверка отсутствия будущего кода/API именно в снимке,
+Docker-сценарий и ручной UI относятся к S1-DEMO и здесь не выполнялись.
+Ветки/checkout не переключались, lab1–lab4, контроллер и его состояние не
+изменялись; другие карточки, агенты и push не запускались.
+
+Первая попытка завершения S1-API была заблокирована средой:
+
+```text
+$ git add Kanban.md README.md docs/api.md docs/delivery.md raft/inspect.go raft/inspect_test.go server/http_election_test.go
+fatal: Unable to create '/home/bogdan/rafting/.git/index.lock': Read-only file system
+exit=128
+```
+
+В той попытке Git add не выполнен, commit не запускался. HEAD остался на базе
+`186206964a7b457f235428f6b7ddf20958ceaea2`; все изменения сохранены в рабочем
+дереве main. Тогда статус сдачи — blocked: для локального коммита и чистого
+дерева требовался недоступный в той среде доступ на запись к `.git`.
+Карточка возвращена из предварительного «Готово» в «В работе».
+
+### Продолжение S1-API после снятия ограничения записи (2026-10-31)
+
+Пользователь повторно поручил ту же карточку с доступом на запись. Проверены
+прежняя ветка main и точная база; продолжены только сохранённые выше изменения
+S1-API, новых файлов от других задач нет. Git add теперь выполнен успешно;
+прежнее препятствие устранено. Код с момента первого прогона не менялся.
+Повторены обязательные проверки в новой среде перед завершением сдачи.
+Go и `GOCACHE=/tmp/raftgo-s1-api-go-cache` те же; реальные результаты:
+
+```text
+$ go build ./...
+exit=0 (вывод пуст)
+
+$ go test -count=1 ./...
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv       0.002s
+ok  raftgo/raft     0.989s
+ok  raftgo/server   5.710s
+ok  raftgo/storage  0.002s
+?   raftgo/transport [no test files]
+exit=0
+
+$ go test -race -count=1 ./...
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv       1.008s
+ok  raftgo/raft     6.316s
+ok  raftgo/server   6.754s
+ok  raftgo/storage  1.014s
+?   raftgo/transport [no test files]
+exit=0
+
+$ go vet ./...
+exit=0 (вывод пуст; .golangci.yml отсутствует)
+
+$ gofmt -l .
+exit=0 (вывод пуст)
+
+$ git diff --check
+exit=0 (вывод пуст)
+
+$ go test ./server ./raft -run 'TestHTTPElection|TestElectionStatus' -count=100
+ok  raftgo/server 0.109s
+ok  raftgo/raft   0.057s
+exit=0
+```
+
+S1-API готова без оставшихся препятствий; изменения сохраняются одним локальным
+коммитом в main. Снимки lab1–lab4 не создавались и не изменялись. Следующая
+доступная карточка — S1-UI; другие карточки, агенты и push не запускались.
