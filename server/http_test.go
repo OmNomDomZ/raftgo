@@ -43,11 +43,7 @@ func TestHTTPClusterCommitRedirectFailover(t *testing.T) {
 	client := &http.Client{Timeout: 7 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	defer client.CloseIdleConnections()
 	for i := range count {
-		disk, err := storage.Open(t.TempDir())
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer disk.Close()
+		memory := &storage.Memory{}
 		peers := map[raft.NodeID]string{}
 		var ids []raft.NodeID
 		for j, m := range members {
@@ -57,7 +53,8 @@ func TestHTTPClusterCommitRedirectFailover(t *testing.T) {
 			}
 		}
 		apply := make(chan raft.ApplyMsg, 128)
-		nodes[i], err = raft.New(raft.Config{ID: members[i].ID, Peers: ids, Storage: disk, Transport: &transport.HTTP{Peers: peers, Client: client}, ApplyCh: apply, ElectionTimeoutMin: 300 * time.Millisecond, ElectionTimeoutMax: 600 * time.Millisecond, HeartbeatInterval: 40 * time.Millisecond, AppendEntriesTimeout: 200 * time.Millisecond})
+		var err error
+		nodes[i], err = raft.New(raft.Config{ID: members[i].ID, Peers: ids, Storage: memory, Transport: &transport.HTTP{Peers: peers, Client: client}, ApplyCh: apply, ElectionTimeoutMin: 300 * time.Millisecond, ElectionTimeoutMax: 600 * time.Millisecond, HeartbeatInterval: 40 * time.Millisecond, AppendEntriesTimeout: 200 * time.Millisecond})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -248,12 +245,8 @@ func TestHTTPClusterCommitRedirectFailover(t *testing.T) {
 }
 
 func TestAPIValidationAndLocalReads(t *testing.T) {
-	disk, err := storage.Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer disk.Close()
-	node, err := raft.New(raft.Config{ID: "n", Storage: disk, Transport: &transport.HTTP{}, ApplyCh: make(chan raft.ApplyMsg)})
+	memory := &storage.Memory{}
+	node, err := raft.New(raft.Config{ID: "n", Storage: memory, Transport: &transport.HTTP{}, ApplyCh: make(chan raft.ApplyMsg)})
 	if err != nil {
 		t.Fatal(err)
 	}

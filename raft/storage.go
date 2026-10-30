@@ -1,14 +1,13 @@
 package raft
 
-// Storage persists a node's PersistentState and log. Writes must be durable
-// before they return, and implementations must be safe for concurrent use.
+// Storage preserves a node's PersistentState and log. Successful writes must
+// be synchronous and atomic, and implementations must be safe for concurrent use.
+// In the safe-memory model, the same Storage object survives simulated node
+// restarts; losing the process memory starts a new empty cluster, not recovery.
 //
-// TODO: specify failure semantics before the file-backed implementation. The
-// node treats a failed write as transient and retries it later, but after a
-// failed fsync the kernel may drop the dirty pages and a retried fsync can
-// report success without the data on disk (Linux). An implementation must
-// then fail every later call instead of letting a retry succeed, or the node
-// could acknowledge entries or a vote a restart would lose.
+// A failed write must not later be mistaken for a successful persisted write.
+// If a backend cannot establish what survived a failure, it must reject later
+// operations rather than acknowledge state or entries a restart could lose.
 type Storage interface {
 	SaveState(state PersistentState) error
 	// LoadState returns the zero PersistentState for a fresh node with no
@@ -20,11 +19,13 @@ type Storage interface {
 	// as one atomic write: the node truncates a conflicting suffix and
 	// appends in one call (§5.3). from is at least 1 and at most one past
 	// the last stored index. StoreLog must not modify entries or keep
-	// references into them after it returns.
+	// references into them after it returns. Invalid from returns an error
+	// without changing the stored log; an empty entries slice truncates it.
 	StoreLog(from Index, entries []LogEntry) error
 	// LoadLog returns the stored entries, the first one at index 1. Like
 	// LoadState, it must report a log it cannot read as an error, never as
-	// an empty one: that would lose committed entries.
+	// an empty one: that would lose committed entries. The returned slice and
+	// command bytes belong to the caller and must not alias stored data.
 	LoadLog() ([]LogEntry, error)
 }
 

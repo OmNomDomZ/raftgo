@@ -13,6 +13,7 @@ import uuid
 ROOT = Path(__file__).resolve().parent
 COMPOSE = ['docker', 'compose', '-p', 'raftgo-scenarios', '-f', str(ROOT / 'compose.yaml')]
 NODES = [f'node{i}' for i in range(1, 6)]
+PAUSED = set()
 BASE = {n: f'http://127.0.0.1:{18000 + i}' for i, n in enumerate(NODES, 1)}
 
 
@@ -31,17 +32,22 @@ def step(message):
 
 
 def compose(*args):
-    subprocess.run(COMPOSE + list(args), check=True)
+    # Track before Docker runs: a partially failed pause also needs cleanup.
+    if args[0] == 'pause':
+        PAUSED.update(args[1:] or NODES)
+    subprocess.run(COMPOSE + list(args), check=True, timeout=45)
+    if args[0] == 'unpause':
+        PAUSED.difference_update(args[1:] or NODES)
 
 
-def request(node, method, path, data=None, token=None, expected=None):
+def request(node, method, path, data=None, token=None, expected=None, timeout=8):
     headers = {'Content-Type': 'application/json'}
     if token is not None:
         headers['X-Lock-Token'] = token
     req = urllib.request.Request(BASE[node] + path, method=method, headers=headers,
                                  data=None if data is None else json.dumps(data).encode())
     try:
-        response = urllib.request.build_opener(NoRedirect).open(req, timeout=8)
+        response = urllib.request.build_opener(NoRedirect).open(req, timeout=timeout)
     except urllib.error.HTTPError as err:
         response = err
     with response:
@@ -56,6 +62,7 @@ def request(node, method, path, data=None, token=None, expected=None):
 def eventually(fn, timeout=30):
     deadline = time.monotonic() + timeout
     last = None
+    print(f'  Waiting up to {timeout}s for condition', flush=True)
     while time.monotonic() < deadline:
         try:
             value = fn()
@@ -68,12 +75,14 @@ def eventually(fn, timeout=30):
 
 
 def status(node):
-    return request(node, 'GET', '/status')[1]['node']
+    return request(node, 'GET', '/status', timeout=0.7)[1]['node']
 
 
 def leader(nodes=NODES):
     def ready():
-        states = {n: status(n) for n in nodes}
+        states = {n: status(n) for n in nodes if n not in PAUSED}
+        if not states:
+            return False
         leaders = [n for n, s in states.items() if s['role'] == 'Leader']
         if len(leaders) != 1:
             return False
@@ -108,7 +117,7 @@ def logs_match(index, nodes=NODES, expected_prefix=None):
 
 
 def failover(old):
-    compose('stop', old)
+    compose('pause', old)
     new = leader([n for n in NODES if n != old])
     check(new != old, 'Leader did not change')
     print(f'  New leader: {new}', flush=True)
@@ -125,25 +134,25 @@ def task1():
         check(s['id'] == n and s['running'] and s['quorum'] == 3, 'Invalid node status')
         check(s['role'] == ('Leader' if n == current else 'Follower'), 'Unexpected role')
         check(s['term'] == term and s['leader_id'] == current, 'Election disagreement')
-    step('1.2 Stop leader; four nodes elect a leader in a higher term')
+    step('1.2 Pause leader; four nodes elect a leader in a higher term')
     new = failover(current)
     check(status(new)['term'] > term, 'Term did not increase')
-    step('1.3 Restart old leader; it joins as a follower')
-    compose('start', current)
+    step('1.3 Unpause old leader; it joins as a follower')
+    compose('unpause', current)
     leader()
     check(status(current)['role'] == 'Follower', 'Old leader did not step down')
-    step('1.4 Stop three nodes including leader; two cannot elect a leader')
+    step('1.4 Pause three nodes including leader; two cannot elect a leader')
     current = leader()
-    stopped = [current] + [n for n in NODES if n != current][:2]
-    compose('stop', *stopped)
-    survivors = [n for n in NODES if n not in stopped]
+    paused = [current] + [n for n in NODES if n != current][:2]
+    compose('pause', *paused)
+    survivors = [n for n in NODES if n not in paused]
     # Several full election timeout windows; this is an observation, not a proof.
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
         check(all(status(n)['role'] != 'Leader' for n in survivors), 'Minority elected a leader')
         time.sleep(0.2)
-    compose('start', *stopped)
-    print(f'  Restored leader: {leader()}')
+    compose('unpause', *paused)
+    print(f'  Resumed leader: {leader()}')
 
 
 def task2():
@@ -159,10 +168,10 @@ def task2():
         check(item['command'] == command and item['term'] == entry['term'], 'Incorrect entry')
     step('2.2 Offline follower catches up after two further adds')
     offline = follower(current)
-    compose('stop', offline)
+    compose('pause', offline)
     for suffix in ('-2', '-3'):
         _, last, _ = request(current, 'POST', '/entries', {'command': command + suffix}, expected=201)
-    compose('start', offline)
+    compose('unpause', offline)
     leader()
     logs_match(last['index'])
     step('2.3 Committed prefix survives leader failure')
@@ -170,17 +179,17 @@ def task2():
     saved = request(current, 'GET', '/log')[1]['entries'][:last['index']]
     new = failover(current)
     _, last, _ = request(new, 'POST', '/entries', {'command': command + '-new-leader'}, expected=201)
-    compose('start', current)
+    compose('unpause', current)
     leader()
     logs_match(last['index'], expected_prefix=saved)
     step('2.4 No quorum: add must not return success')
     current = leader()
-    stopped = [n for n in NODES if n != current][:3]
-    compose('stop', *stopped)
+    paused = [n for n in NODES if n != current][:3]
+    compose('pause', *paused)
     code, body, _ = request(current, 'POST', '/entries', {'command': command + '-uncertain'})
     check(code in (503, 504), f'Minority acknowledged write: {code} {body}')
     print(f'  add without quorum -> {code}; outcome may be unknown')
-    compose('start', *stopped)
+    compose('unpause', *paused)
     leader()
 
 
@@ -199,15 +208,15 @@ def task3():
     request(current, 'PUT', path, {'value': ''}, expected=200)
     check(request(current, 'GET', path, expected=200)[1]['value'] == '', 'Empty string lost')
     request(current, 'PUT', path, {'value': value}, expected=200)
-    step('3.2 Value survives a new leader and full restart with the same volumes')
+    step('3.2 Value survives a new leader and pause/unpause of all processes (RAM retained)')
     new = failover(current)
     check(request(new, 'GET', path, expected=200)[1]['value'] == value, 'Failover lost value')
-    compose('start', current)
+    compose('unpause', current)
     leader()
-    compose('stop')
-    compose('start')
+    compose('pause')
+    compose('unpause')
     current = leader()
-    check(request(current, 'GET', path, expected=200)[1]['value'] == value, 'Replay lost value')
+    check(request(current, 'GET', path, expected=200)[1]['value'] == value, 'Pause lost value')
     step('3.3 Delete and PUT upsert')
     request(current, 'DELETE', path, expected=200)
     request(current, 'GET', path, expected=404)
@@ -215,13 +224,13 @@ def task3():
     request(current, 'PUT', path, {'value': 'upsert'}, expected=200)
     check(request(current, 'GET', path, expected=200)[1]['value'] == 'upsert', 'Upsert failed')
     step('3.4 Without quorum neither write nor linearizable read succeeds')
-    stopped = [n for n in NODES if n != current][:3]
-    compose('stop', *stopped)
+    paused = [n for n in NODES if n != current][:3]
+    compose('pause', *paused)
     for method, data in [('PUT', {'value': 'uncertain'}), ('GET', None)]:
         code, body, _ = request(current, method, path, data)
         check(code in (503, 504), f'Minority served {method}: {code} {body}')
         print(f'  {method} without quorum -> {code}')
-    compose('start', *stopped)
+    compose('unpause', *paused)
     leader()
 
 
@@ -252,14 +261,14 @@ def task4():
         request(current, method, path + suffix, body, expected=423)
     request(current, 'PUT', path, {'value': 'protected'}, token=token, expected=200)
     request(current, 'POST', path + '/cas', {'expected': 'protected', 'value': 'locked-cas'}, token=token, expected=200)
-    step('4.4 Lock survives leader failure and full restart')
+    step('4.4 Lock survives leader failure and pause/unpause of all processes')
     new = failover(current)
     request(new, 'GET', path, expected=423)
     check(request(new, 'GET', path, token=token, expected=200)[1]['value'] == 'locked-cas', 'Locked value lost')
-    compose('start', current)
+    compose('unpause', current)
     leader()
-    compose('stop')
-    compose('start')
+    compose('pause')
+    compose('unpause')
     current = leader()
     request(current, 'GET', path, expected=423)
     request(current, 'GET', path, token=token, expected=200)
@@ -277,6 +286,34 @@ def task4():
     check(request(current, 'GET', path, expected=200)[1]['value'] == 'recreated', 'Final value wrong')
 
 
+def cleanup():
+    # Query Docker, not just PAUSED: a failed pause may have completed partially.
+    result = subprocess.run(COMPOSE + ['ps', '--status', 'paused', '--services'],
+                            check=True, capture_output=True, text=True, timeout=15)
+    errors = []
+    for node in result.stdout.split():
+        if node not in NODES:
+            continue
+        try:
+            compose('unpause', node)
+        except (subprocess.SubprocessError, OSError) as err:
+            errors.append(f'{node}: {err}')
+    if errors:
+        raise RuntimeError('Unpause failed: ' + '; '.join(errors))
+
+
+def diagnostics():
+    def inspect(node):
+        try:
+            return node, status(node)
+        except (OSError, urllib.error.URLError, ValueError) as err:
+            return node, str(err)
+    print("\nFailure diagnostics (independent local observations):", flush=True)
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        for node, result in pool.map(inspect, NODES):
+            print(f"  {node}: {result}", flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('task', choices=['1', '2', '3', '4', 'all'])
@@ -285,9 +322,12 @@ def main():
         for number in ('1234' if args.task == 'all' else args.task):
             globals()['task' + number]()
             print(f'\nPASS task{number}', flush=True)
+    except Exception:
+        diagnostics()
+        raise
     finally:
-        # Restore stopped containers even after a failed assertion; keep data for inspection.
-        compose('start')
+        # Unpause all nodes, including a partially completed Docker pause.
+        cleanup()
 
 
 if __name__ == '__main__':

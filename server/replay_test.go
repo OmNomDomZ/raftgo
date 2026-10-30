@@ -13,12 +13,8 @@ import (
 )
 
 func TestConsumerReplayAndNoOpBarrier(t *testing.T) {
-	disk, err := storage.Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer disk.Close()
-	node, err := raft.New(raft.Config{ID: "n", Storage: disk, Transport: &transport.HTTP{}, ApplyCh: make(chan raft.ApplyMsg)})
+	memory := &storage.Memory{}
+	node, err := raft.New(raft.Config{ID: "n", Storage: memory, Transport: &transport.HTTP{}, ApplyCh: make(chan raft.ApplyMsg)})
 	if err != nil {
 		t.Fatal(err)
 	}

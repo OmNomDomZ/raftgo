@@ -1,7 +1,6 @@
 {
   "listen": ":8080",
   "rpc_listen": ":9000",
-  "data_dir": "/data",
   "members": [
     {
       "id": "node1",
