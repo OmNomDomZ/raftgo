@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Manual test dashboard: one page with /status of every node and Stop/Start buttons.
+"""Manual test dashboard: one page with /status of every node and Pause/Resume buttons.
 Won elections (with vote counts) are taken from the nodes' "became leader" log lines.
 
     python3 scenarios/dashboard.py           # Docker stand from scenarios/compose.yaml
@@ -7,7 +7,8 @@ Won elections (with vote counts) are taken from the nodes' "became leader" log l
 
 Python standard library only. Does not change the stand: Docker mode runs the same
 `docker compose -p raftgo-scenarios ...` commands as run.py and leaves containers
-running on exit, so run.py and manual commands keep working alongside.
+running on exit. Do not run failure scenarios concurrently with manual controls.
+Failures use pause/unpause (SIGSTOP/SIGCONT locally), preserving RAM.
 """
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -16,7 +17,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
-import shutil
 import signal
 import socket
 import subprocess
@@ -47,14 +47,14 @@ class DockerNodes:
         return out.stdout.splitlines()
 
     def stop(self, node):
-        subprocess.run(COMPOSE + ['stop', node], check=True)
+        subprocess.run(COMPOSE + ['pause', node], check=True)
 
     def start(self, node):
-        subprocess.run(COMPOSE + ['start', node], check=True)
+        subprocess.run(COMPOSE + ['unpause', node], check=True)
 
     def close(self):
         print('Контейнеры оставлены запущенными. Остановить: '
-              'docker compose -p raftgo-scenarios -f scenarios/compose.yaml down -v')
+              'docker compose -p raftgo-scenarios -f scenarios/compose.yaml down')
 
 
 class LocalNodes:
@@ -64,28 +64,30 @@ class LocalNodes:
             with socket.socket() as s:
                 if s.connect_ex(('127.0.0.1', port)) == 0:
                     raise SystemExit(f'Порт {port} занят. Запущен Docker-стенд? Остановите его '
-                                     '(docker compose -p raftgo-scenarios -f scenarios/compose.yaml stop) '
+                                     '(docker compose -p raftgo-scenarios -f scenarios/compose.yaml down) '
                                      'или запускайте dashboard без --local.')
-        self.work = Path(tempfile.gettempdir()) / 'raftgo-dashboard'
-        shutil.rmtree(self.work, ignore_errors=True)
-        self.work.mkdir()
+        self.work = Path(tempfile.mkdtemp(prefix='raftgo-dashboard-'))
         self.binary = self.work / 'raftgo'
         subprocess.run(['go', 'build', '-o', str(self.binary), './cmd/raftgo'], cwd=REPO, check=True)
         members = [{'id': n, 'rpc_url': RPC[n], 'api_url': API[n]} for n in NODES]
         for n in NODES:
             cfg = {'listen': API[n][len('http://'):], 'rpc_listen': RPC[n][len('http://'):],
-                   'data_dir': str(self.work / 'data'), 'members': members}
+                   'members': members}
             (self.work / f'{n}.json').write_text(json.dumps(cfg))
         self.procs = {}
         self.offsets = {n: 0 for n in NODES}
         self.lock = threading.Lock()
         for n in NODES:
             self.start(n)
-        print(f'Логи и данные нод: {self.work}')
+        print(f'Конфиги и логи нод: {self.work}; состояние кластера только в RAM')
 
     def start(self, node):
         with self.lock:
             if node in self.procs:
+                proc = self.procs[node]
+                if proc.poll() is not None:
+                    raise RuntimeError('Процесс завершён; пересоздайте весь кластер')
+                proc.send_signal(signal.SIGCONT)
                 return
             log = open(self.work / f'{node}.log', 'a')
             self.procs[node] = subprocess.Popen(
@@ -95,10 +97,11 @@ class LocalNodes:
 
     def stop(self, node):
         with self.lock:
-            proc = self.procs.pop(node, None)
-        if proc is not None:
-            proc.send_signal(signal.SIGTERM)  # graceful, same signal as `docker compose stop`
-            proc.wait(15)
+            proc = self.procs.get(node)
+            if proc is not None:
+                if proc.poll() is not None:
+                    raise RuntimeError('Процесс завершён; пересоздайте весь кластер')
+                proc.send_signal(signal.SIGSTOP)
 
     def log_lines(self):
         lines = []
@@ -115,8 +118,16 @@ class LocalNodes:
         return lines
 
     def close(self):
-        for n in list(self.procs):
-            self.stop(n)
+        for proc in self.procs.values():
+            if proc.poll() is None:
+                proc.send_signal(signal.SIGCONT)
+                proc.terminate()
+        for proc in self.procs.values():
+            try:
+                proc.wait(15)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
 
 
 def status(node):
@@ -257,8 +268,8 @@ h2 { font-size:15px; margin:20px 0 6px; }
 <h1>raftgo: 5 нод</h1>
 <div class="sub" id="sub">Опрос /status раз в секунду</div>
 <div class="bar">
-  <button onclick="act('stop', leader())">Stop лидера</button>
-  <button onclick="NODES.forEach(n => act('start', n))">Start все</button>
+  <button onclick="act('stop', leader())">Pause лидера</button>
+  <button onclick="NODES.forEach(n => act('start', n))">Resume все</button>
 </div>
 <div class="grid" id="grid"></div>
 <h2>События</h2>
@@ -294,8 +305,8 @@ function card(s) {
     <div class="head"><span class="name">${esc(s.id)}</span><span class="role">${esc(role)}</span></div>
     <dl>${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}</dl>
     <div class="btns">
-      <button ${!s.up || s.busy ? 'disabled' : ''} onclick="act('stop','${s.id}')">Stop</button>
-      <button ${s.up || s.busy ? 'disabled' : ''} onclick="act('start','${s.id}')">Start</button>
+      <button ${!s.up || s.busy ? 'disabled' : ''} onclick="act('stop','${s.id}')">Pause</button>
+      <button ${s.up || s.busy ? 'disabled' : ''} onclick="act('start','${s.id}')">Resume</button>
     </div></div>`;
 }
 
