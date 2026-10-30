@@ -39,11 +39,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	disk, err := storage.Open(cfg.DataDir + "/" + *id)
-	if err != nil {
-		return err
-	}
-	defer disk.Close()
+	memory := &storage.Memory{}
 	peers := map[raft.NodeID]string{}
 	var ids []raft.NodeID
 	for _, m := range cfg.Members {
@@ -55,7 +51,7 @@ func run() error {
 	client := &http.Client{Timeout: time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	defer client.CloseIdleConnections()
 	apply := make(chan raft.ApplyMsg, 128)
-	node, err := raft.New(raft.Config{ID: raft.NodeID(*id), Peers: ids, Storage: disk, Transport: &transport.HTTP{Peers: peers, Client: client}, ApplyCh: apply, Logger: slog.Default(), ElectionTimeoutMin: 800 * time.Millisecond, ElectionTimeoutMax: 1600 * time.Millisecond, HeartbeatInterval: 100 * time.Millisecond, AppendEntriesTimeout: 400 * time.Millisecond, RequestVoteTimeout: 400 * time.Millisecond})
+	node, err := raft.New(raft.Config{ID: raft.NodeID(*id), Peers: ids, Storage: memory, Transport: &transport.HTTP{Peers: peers, Client: client}, ApplyCh: apply, Logger: slog.Default(), ElectionTimeoutMin: 800 * time.Millisecond, ElectionTimeoutMax: 1600 * time.Millisecond, HeartbeatInterval: 100 * time.Millisecond, AppendEntriesTimeout: 400 * time.Millisecond, RequestVoteTimeout: 400 * time.Millisecond})
 	if err != nil {
 		return err
 	}

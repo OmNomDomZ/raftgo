@@ -28,6 +28,5 @@ coverage.html
 .env
 .env.local
 
-# Logs and local data dirs (raft/kv node state during manual runs)
+# Logs
 *.log
-/data/

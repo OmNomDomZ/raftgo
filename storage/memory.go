@@ -1,3 +1,4 @@
+// Package storage implements safe in-memory storage for Raft nodes.
 package storage
 
 import (

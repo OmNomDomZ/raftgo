@@ -20,7 +20,6 @@ type Member struct {
 type Config struct {
 	Listen    string   `json:"listen"`
 	RPCListen string   `json:"rpc_listen"`
-	DataDir   string   `json:"data_dir"`
 	Members   []Member `json:"members"`
 }
 
@@ -42,8 +41,8 @@ func LoadConfig(path string, id raft.NodeID) (Config, error) {
 	return c, c.Validate(id)
 }
 func (c Config) Validate(id raft.NodeID) error {
-	if id == "" || c.DataDir == "" {
-		return fmt.Errorf("id and data_dir are required")
+	if id == "" {
+		return fmt.Errorf("id is required")
 	}
 	for _, addr := range []string{c.Listen, c.RPCListen} {
 		if _, _, err := net.SplitHostPort(addr); err != nil {
