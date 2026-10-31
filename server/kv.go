@@ -19,22 +19,6 @@ type appliedResult struct {
 	result kv.Result
 }
 
-func (a *API) waitApplied(ctx context.Context, index raft.Index) error {
-	for {
-		a.mu.Lock()
-		applied, changed := a.applied, a.changed
-		a.mu.Unlock()
-		if applied >= index {
-			return nil
-		}
-		select {
-		case <-changed:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-}
-
 func (a *API) kvRequest(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
 	if key == "" || len(key) > 1024 || !utf8.ValidString(key) {

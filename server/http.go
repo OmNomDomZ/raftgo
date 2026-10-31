@@ -179,28 +179,18 @@ func (a *API) appendEntry(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	for {
-		a.mu.Lock()
-		applied, changed := a.applied, a.changed
-		a.mu.Unlock()
-		if applied >= index {
-			// An index alone is insufficient: a new leader may replace an uncommitted
-			// entry at that index. Only the original term proves this write committed.
-			_, entries := a.Node.InspectLog()
-			if index <= raft.Index(len(entries)) && entries[index-1].Term == term {
-				writeJSON(w, 201, map[string]any{"index": index, "term": term, "committed": true})
-				return
-			}
-			problem(w, 409, "entry was replaced before commit")
-			return
-		}
-		select {
-		case <-changed:
-		case <-ctx.Done():
-			writeJSON(w, 504, map[string]any{"error": "commit not confirmed; outcome unknown, retry may duplicate command", "index": index, "term": term})
-			return
-		}
+	if err := a.waitApplied(ctx, index); err != nil {
+		writeJSON(w, 504, map[string]any{"error": "commit not confirmed; outcome unknown, retry may duplicate command", "index": index, "term": term})
+		return
 	}
+	// An index alone is insufficient: a new leader may replace an uncommitted
+	// entry at that index. Only the original term proves this write committed.
+	_, entries := a.Node.InspectLog()
+	if index <= raft.Index(len(entries)) && entries[index-1].Term == term {
+		writeJSON(w, 201, map[string]any{"index": index, "term": term, "committed": true})
+		return
+	}
+	problem(w, 409, "entry was replaced before commit")
 }
 
 // RPCHandler belongs on a private listener, separate from the public API.

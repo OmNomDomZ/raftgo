@@ -2374,3 +2374,74 @@ $ git diff --check
 не запускались, производительность не измерялась. Autokanban пока запрещает
 выполнение R-ID; карточки выполняются прямым поручением. Следующий доступный
 ID — R1. Пересдача принятых снимков требует отдельного явного поручения.
+
+
+## R1 — Общее ожидание apply для строк и KV (2026-10-31)
+
+Ветка `main`, база `a59a09f305a76851f8f5af53113119e6db963898`.
+Checkout перед работой чистый; S4-DEMO готова. Статус «В работе» записан
+коммитом `b8b9b99`. Пользователь поручил выбрать одну карточку и запушить
+изменения; другие карточки и агенты не запускались. Работа выполнена в том же
+checkout main. Принятые lab1–lab4 и snapshot-ветки не менялись.
+
+Изменены `server/apply_wait.go`, `server/http.go`, `server/kv.go`,
+`server/apply_wait_test.go`, `Kanban.md`, `docs/tasks.md` и этот журнал.
+Единственный цикл ожидания вынесен из kv.go в apply_wait.go без зависимости
+от KV. Строковый appendEntry вызывает его, затем проверяет исходные index/term
+через лог. KV сохраняет проверку term в results; GET — ReadIndex перед
+ожиданием. Чтение applied и changed остаётся под одним mutex, границы
+HTTP-дедлайнов, ответы 201/409/504 и метаданные не изменены. Consume не менялся.
+
+Новые synctest-тесты проверяют apply до подписки (равный и больший индекс,
+включая уже отменённый context), ожидание дальнейшего прогресса, broadcast
+нескольким ожидающим, повторную подписку после промежуточного apply, отмену
+и deadline. Существующие string_apply, http_entries, http_kv, kv_safety и
+http_atomic сохраняют проверки задержанного consumer, замены term на том же
+index, ReadIndex, потери кворума и позднего commit после 504 без повтора.
+
+Go `go1.27.3-X:nodwarf5 linux/amd64`; go.mod 1.27.1 сохранён.
+`.golangci.yml` отсутствует. Фактические обязательные проверки, все exit=0:
+
+```text
+$ go build ./...
+(без вывода)
+$ go test -count=1 ./...
+ok  raftgo/client  0.249s
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv      0.004s
+ok  raftgo/raft    1.107s
+ok  raftgo/server  6.615s
+ok  raftgo/storage 0.003s
+?   raftgo/transport [no test files]
+$ go test -race -count=1 ./...
+ok  raftgo/client  1.293s
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv      1.009s
+ok  raftgo/raft    7.057s
+ok  raftgo/server  8.211s
+ok  raftgo/storage 1.016s
+?   raftgo/transport [no test files]
+$ go vet ./...
+(без вывода)
+$ gofmt -l .
+(пусто)
+$ git diff --check
+(без вывода)
+```
+
+Дополнительные проверки, обе exit=0:
+
+```text
+$ go test ./server -run 'Test(WaitApplied|StringWrite|HTTPEntries|HTTPKV|KVRead|KVConcurrent|KVReplay|KVEntries|HTTPAtomic)' -count=1
+ok  raftgo/server 0.091s
+$ go test -race ./server -run 'Test(WaitApplied|StringWrite|HTTPEntries|HTTPKV|KVRead|KVConcurrent|KVReplay|KVEntries|HTTPAtomic)' -count=20
+ok  raftgo/server 14.444s
+```
+
+Ограничений выполнения карточки нет. Docker и ручной UI не запускались:
+R1 не меняет API или UI и требует Go-набор и перечисленные safety-тесты;
+пересдача снимков не поручена. Следующий доступный ID — R2.
+Перед push выполнен fetch origin/main: удалённый SHA
+`fda7bed3e0e39f77ebb9db6244cdf416ecc6cbfa` — предок HEAD, доступен обычный
+fast-forward. Push main включает также ранее созданные локальные коммиты;
+другие refs не отправляются.
