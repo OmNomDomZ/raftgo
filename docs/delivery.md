@@ -1920,3 +1920,97 @@ ok  raftgo/server 1.103s
 
 Оба запуска exit=0. Docker и ручной UI относятся к приёмке этапа S4-DEMO,
 в S4-CORE не запускались. Ограничений выполнения карточки нет.
+
+## S4-API — HTTP CAS, lock и unlock (2026-10-31)
+
+Ветка `main`, база `7eebb2f1c6d1e35d65c7583799a2785c9610b30f`;
+checkout перед работой чистый, зависимость S4-CORE готова. Работа выполнена
+в существующей папке без переключений, новых веток, worktree, других агентов
+и push. Снимки lab1–lab4, контроллер и его состояние не менялись.
+
+Существующие маршруты POST `/kv/{key}/cas`, POST/DELETE `/kv/{key}/lock`
+сохранены; CAS сравнивает и меняет значение одной командой при apply.
+`X-Lock-Token` передаётся в GET/CRUD/CAS/unlock. Чужой/пустой токен под lock
+даёт 423, старый токен после unlock — 409; удаление значения не снимает lock.
+Ответы на изменения теперь содержат и `index`, и `term` своей применённой
+записи (включая отказы state machine). Проверка пары не позволяет выдать успех
+для заменённой записи. Lock/unlock отклоняют непустое тело; повторные заголовки
+токена, списки через запятую, невалидный UTF-8 и токены длиннее 1024 байт
+отклоняются с 400 до Start. Токен остаётся непрозрачным для HTTP: чужое
+значение проверяется state machine, а не превращается в ошибку формата.
+Существующий лимит всей внутренней команды 64 КиБ и точный JSON CAS сохранены.
+
+Изменённые файлы:
+
+- `server/kv.go`: валидация заголовка и тела lock/unlock, term в ответе.
+- `server/http_atomic_test.go`: HTTP-гонки CAS/lock с одним победителем и одной
+  записью на запрос; матрица методов с пустым/чужим/верным/старым токеном,
+  lock отсутствующего ключа, удаление/пересоздание, fencing; строгие тела,
+  ключи, заголовки, методы; 504 CAS/lock/unlock без кворума, последующий apply
+  исходной записи без повтора; потеря ответа через ResponseWriter с
+  io.ErrClosedPipe после apply, отсутствие повтора и сохранение результата;
+  замена индекса другим term и ожидание consumer после commit для всех трёх
+  операций. Таймеры виртуальные, память при изоляции сохраняется.
+- `server/http_kv_test.go`: 307 с экранированным ключом/query и 503 без лидера
+  дополнены CAS/lock/unlock с токеном.
+- `server/http_test.go`: пять реальных Raft-узлов, Memory и HTTP/RPC listeners;
+  гонка lock дополнительно к CAS, следование настоящему 307 для GET/CRUD/CAS/
+  lock/unlock с сохранением метода/тела/токена; CAS владельца после failover.
+  Остановленный узел не возвращается с пустым Storage в продолжающийся кластер.
+- `README.md`: точные правила тел, заголовка, index/term, 307 и неизвестного
+  исхода; `Kanban.md` и этот журнал — статус и результаты S4-API.
+
+Go `go1.27.3-X:nodwarf5 linux/amd64`; версия go.mod сохранена,
+`.golangci.yml` отсутствует. Фактические обязательные проверки, все exit=0:
+
+```text
+$ go build ./...
+(без вывода)
+$ go test -count=1 ./...
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv        0.002s
+ok  raftgo/raft      1.053s
+ok  raftgo/server    6.628s
+ok  raftgo/storage   0.003s
+?   raftgo/transport [no test files]
+$ go test -race -count=1 ./...
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv        1.009s
+ok  raftgo/raft      6.456s
+ok  raftgo/server    8.457s
+ok  raftgo/storage   1.016s
+?   raftgo/transport [no test files]
+$ go vet ./...
+(без вывода)
+$ gofmt -l .
+(пусто)
+$ git diff --check
+(без вывода)
+```
+
+Дополнительные проверки карточки:
+
+```text
+$ go test ./server -run 'TestHTTP(Atomic|Cluster)' -count=1
+ok  raftgo/server 5.849s
+$ go test ./server -run 'TestHTTP(Atomic|KVFollower)' -count=1
+ok  raftgo/server 0.055s
+$ go test -race ./server -run 'TestHTTP(Atomic|KVFollower)' -count=20
+ok  raftgo/server 7.766s
+```
+
+Все exit=0. Первый запуск новых тестов обнаружил несовпадение uint64 результата
+KV и raft.Index в тестовых сравнениях; явные преобразования исправлены до
+успешных прогонов. Docker и ручной UI относятся к приёмке S4-DEMO, здесь
+не запускались. Ограничений выполнения S4-API нет. Следующий доступный ID —
+S4-CLIENT (также доступна S4-UI); другие карточки не запускались.
+
+Дополнительно после полного набора:
+
+```text
+$ go test -race ./server -run TestHTTPClusterCommitRedirectFailover -count=3
+ok  raftgo/server 18.430s
+```
+
+Exit=0. После обновления журнала и канбана `git diff --check` и `gofmt -l .`
+повторены успешно, вывод пуст. S4-API переведена в «Готово».

@@ -140,9 +140,15 @@ func TestHTTPKVFollowerRedirectAndUnknownLeader(t *testing.T) {
 		}
 		h := api.Handler()
 		path := "/kv/a%2Fb%3F%25?source=test"
-		for _, method := range []string{"GET", "PUT"} {
-			w := kvRequestAt(h, ctx, method, path, `{"value":"x"}`)
-			if w.Code != 307 || w.Header().Get("Location") != "http://b"+path {
+		for _, op := range []struct{ method, suffix, body string }{
+			{"GET", "", ""}, {"PUT", "", `{"value":"x"}`},
+			{"POST", "/cas", `{"expected":"x","value":"y"}`},
+			{"POST", "/lock", ""}, {"DELETE", "/lock", ""},
+		} {
+			method := op.method
+			requestPath := strings.Replace(path, "?", op.suffix+"?", 1)
+			w := atomicHTTP(h, ctx, method, requestPath, op.body, "7")
+			if w.Code != 307 || w.Header().Get("Location") != "http://b"+requestPath {
 				t.Fatalf("%s redirect: %d %v", method, w.Code, w.Header())
 			}
 		}
@@ -150,8 +156,14 @@ func TestHTTPKVFollowerRedirectAndUnknownLeader(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, method := range []string{"GET", "PUT"} {
-			w := kvRequestAt(h, ctx, method, path, `{"value":"x"}`)
+		for _, op := range []struct{ method, suffix, body string }{
+			{"GET", "", ""}, {"PUT", "", `{"value":"x"}`},
+			{"POST", "/cas", `{"expected":"x","value":"y"}`},
+			{"POST", "/lock", ""}, {"DELETE", "/lock", ""},
+		} {
+			method := op.method
+			requestPath := strings.Replace(path, "?", op.suffix+"?", 1)
+			w := atomicHTTP(h, ctx, method, requestPath, op.body, "7")
 			if w.Code != 503 || w.Header().Get("Retry-After") != "1" {
 				t.Fatalf("%s: %d %v", method, w.Code, w.Header())
 			}

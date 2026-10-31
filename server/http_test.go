@@ -171,6 +171,34 @@ func TestHTTPClusterCommitRedirectFailover(t *testing.T) {
 	if !((first == 200 && second == 409) || (first == 409 && second == 200)) {
 		t.Fatalf("CAS race: %d %d", first, second)
 	}
+	// Race actual HTTP lock requests on an absent key.
+	locks := make(chan map[string]any, 2)
+	lockCodes := make(chan int, 2)
+	for range 2 {
+		go func() {
+			resp, err := client.Post(members[leader].APIURL+"/kv/race/lock", "application/json", nil)
+			if err != nil {
+				lockCodes <- 0
+				locks <- nil
+				return
+			}
+			defer resp.Body.Close()
+			var result map[string]any
+			_ = json.NewDecoder(resp.Body).Decode(&result)
+			lockCodes <- resp.StatusCode
+			locks <- result
+		}()
+	}
+	first, second = <-lockCodes, <-lockCodes
+	if !((first == 201 && second == 423) || (first == 423 && second == 201)) {
+		t.Fatalf("lock race: %d %d", first, second)
+	}
+	for range 2 {
+		if r := <-locks; r["token"] != nil {
+			kvCall(leader, "DELETE", "/kv/race/lock", "", r["token"].(string), 200)
+		}
+	}
+
 	lock := kvCall(leader, "POST", "/kv/x/lock", "", "", 201)
 	token := lock["token"].(string)
 	kvCall(leader, "PUT", "/kv/x", `{"value":"bad"}`, "", 423)
@@ -179,6 +207,38 @@ func TestHTTPClusterCommitRedirectFailover(t *testing.T) {
 	if got := kvCall(leader, "GET", "/kv/x", "", token, 200); got["value"] != "protected" {
 		t.Fatal(got)
 	}
+	// Follow a real 307 with each operation, retaining method, body and token.
+	redirectClient := &http.Client{Timeout: 7 * time.Second}
+	defer redirectClient.CloseIdleConnections()
+	follow := func(method, path, body, token string, code int) {
+		t.Helper()
+		req, err := http.NewRequest(method, members[follower].APIURL+path, bytes.NewBufferString(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("X-Lock-Token", token)
+		resp, err := redirectClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var r httpAtomicResult
+		if err := json.NewDecoder(resp.Body).Decode(&r); err != nil || resp.StatusCode != code || resp.Request.URL.Host != public[leader].Listener.Addr().String() {
+			t.Fatalf("redirect %s: %d %+v %v", method, resp.StatusCode, r, err)
+		}
+		if method != "GET" && (r.Index == 0 || r.Term == 0) {
+			t.Fatal("missing applied index/term")
+		}
+	}
+	follow("GET", "/kv/x", "", token, 200)
+	follow("PUT", "/kv/x", `{"value":"via redirect"}`, token, 200)
+	follow("POST", "/kv/x/cas", `{"expected":"via redirect","value":"protected"}`, token, 200)
+	follow("DELETE", "/kv/x", "", token, 200)
+	follow("POST", "/kv/x", `{"value":"protected"}`, token, 201)
+	follow("POST", "/kv/x/lock", "", token, 423)
+	follow("DELETE", "/kv/x/lock", "", token, 200)
+	lock = kvCall(leader, "POST", "/kv/x/lock", "", "", 201)
+	token = lock["token"].(string)
 	cancels[leader]()
 	<-done[leader]
 	old := leader
@@ -201,6 +261,7 @@ func TestHTTPClusterCommitRedirectFailover(t *testing.T) {
 	if got := kvCall(leader, "GET", "/kv/x", "", token, 200); got["value"] != "protected" {
 		t.Fatal(got)
 	}
+	kvCall(leader, "POST", "/kv/x/cas", `{"expected":"protected","value":"after failover"}`, token, 200)
 	kvCall(leader, "DELETE", "/kv/x/lock", "", token, 200)
 	nextLock := kvCall(leader, "POST", "/kv/x/lock", "", "", 201)["token"].(string)
 	if token == nextLock {

@@ -43,7 +43,14 @@ func (a *API) kvRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
+	// Tokens are opaque to HTTP; ownership/staleness is decided during apply.
+	// Reject ambiguous headers and bound tokens even on the read path.
+	tokens := r.Header.Values("X-Lock-Token")
 	token := r.Header.Get("X-Lock-Token")
+	if len(tokens) > 1 || len(token) > 1024 || !utf8.ValidString(token) || strings.ContainsAny(token, ",\r\n") {
+		problem(w, 400, "expected one lock token, at most 1024 UTF-8 bytes")
+		return
+	}
 	if r.Method == "GET" || r.Method == "HEAD" {
 		index, err := a.Node.ReadIndex(ctx)
 		if err != nil {
@@ -85,6 +92,14 @@ func (a *API) kvRequest(w http.ResponseWriter, r *http.Request) {
 		c.Value = fields["value"]
 		c.Expected = fields["expected"]
 	}
+	if c.Op == "lock" || c.Op == "unlock" {
+		// These commands have no body; do not silently ignore misspelled input.
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1))
+		if err != nil || len(body) != 0 {
+			problem(w, 400, "lock and unlock require an empty body")
+			return
+		}
+	}
 	data, err := json.Marshal(c)
 	if err != nil || len(data)+len(kv.Prefix) > MaxCommandBytes {
 		problem(w, 400, "command too large")
@@ -107,7 +122,10 @@ func (a *API) kvRequest(w http.ResponseWriter, r *http.Request) {
 		problem(w, 409, "entry was replaced before commit")
 		return
 	}
-	writeJSON(w, result.result.Code, result.result)
+	writeJSON(w, result.result.Code, struct {
+		kv.Result
+		Term raft.Term `json:"term"`
+	}{result.result, result.term})
 }
 
 // Decode exact field names and reject duplicates so a request has one meaning.
