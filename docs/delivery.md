@@ -2324,3 +2324,53 @@ $ gofmt -l .
 $ git diff --check
 (без вывода)
 ```
+
+
+## Анализ упрощения lab1–lab4 и очередь R1–R4 (2026-10-31)
+
+Ветка `main`, база `2680197fa41f5a5226839bd89d6b2f6f3d425b41`.
+Checkout перед анализом чистый. Ветки исследованы через git show/ls-tree;
+переключений, копий, агентов, реализации карточек и push не было.
+
+Изменены `Kanban.md`, `docs/tasks.md`, `docs/refactoring.md` и этот журнал.
+Созданы R1 (ожидание apply), R2 (пересылка UI), R3 (валидация ключа/токена),
+R4 (выделение Config). Все в «К выполнению», зависимость S4-DEMO готова.
+Анализ содержит SHA четырёх снимков, основания и границы применимости.
+Поведение программы не менялось; refs lab1–lab4 сверены и остались прежними.
+
+Go `go1.27.3-X:nodwarf5 linux/amd64`; go.mod не менялся, .golangci.yml нет.
+Фактические проверки main, все exit=0:
+
+```text
+$ go build ./...
+(без вывода)
+$ go test -count=1 ./...
+ok  raftgo/client   0.253s
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv       0.002s
+ok  raftgo/raft     0.934s
+ok  raftgo/server   6.652s
+ok  raftgo/storage  0.002s
+?   raftgo/transport [no test files]
+$ go test -race -count=1 ./...
+ok  raftgo/client   1.294s
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv       1.008s
+ok  raftgo/raft     6.361s
+ok  raftgo/server   8.314s
+ok  raftgo/storage  1.020s
+?   raftgo/transport [no test files]
+$ go vet ./...
+(без вывода)
+$ gofmt -l .
+(пусто)
+$ git diff --check
+(без вывода)
+```
+
+Дополнительно штатные парсеры runner.board/cards распознали четыре ID,
+их статус и готовую зависимость; состав ID в канбане и каталоге согласован.
+Ограничения: это статический анализ, Docker/UI и тесты самих снимков повторно
+не запускались, производительность не измерялась. Autokanban пока запрещает
+выполнение R-ID; карточки выполняются прямым поручением. Следующий доступный
+ID — R1. Пересдача принятых снимков требует отдельного явного поручения.
