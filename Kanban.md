@@ -4,7 +4,6 @@ kanban-plugin: board
 
 ## К выполнению
 
-- [ ] [[docs/tasks#S3-DEMO — Сдача CRUD|S3-DEMO — Сдача CRUD]]
 - [ ] [[docs/tasks#S4-CORE — CAS и распределённые блокировки|S4-CORE — CAS и распределённые блокировки]]
 - [ ] [[docs/tasks#S4-API — HTTP CAS, lock и unlock|S4-API — HTTP CAS, lock и unlock]]
 - [ ] [[docs/tasks#S4-CLIENT — Клиентский Go API|S4-CLIENT — Клиентский Go API]]
@@ -12,6 +11,8 @@ kanban-plugin: board
 - [ ] [[docs/tasks#S4-DEMO — Итоговая приёмка четырёх веток|S4-DEMO — Итоговая приёмка четырёх веток]]
 
 ## В работе
+
+- [ ] [[docs/tasks#S3-DEMO — Сдача CRUD|S3-DEMO — Сдача CRUD]]
 
 
 
