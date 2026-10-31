@@ -4,7 +4,6 @@ kanban-plugin: board
 
 ## К выполнению
 
-- [ ] [[docs/tasks#S3-API — HTTP CRUD строк|S3-API — HTTP CRUD строк]]
 - [ ] [[docs/tasks#S3-UI — Форма CRUD|S3-UI — Форма CRUD]]
 - [ ] [[docs/tasks#S3-DEMO — Сдача CRUD|S3-DEMO — Сдача CRUD]]
 - [ ] [[docs/tasks#S4-CORE — CAS и распределённые блокировки|S4-CORE — CAS и распределённые блокировки]]
@@ -26,9 +25,12 @@ kanban-plugin: board
 
 
 
+
 ## На проверке
 
 ## Готово
+
+- [x] [[docs/tasks#S3-API — HTTP CRUD строк|S3-API — HTTP CRUD строк]]
 
 - [x] [[docs/tasks#S3-CORE — KV CRUD и безопасные чтения|S3-CORE — KV CRUD и безопасные чтения]]
 

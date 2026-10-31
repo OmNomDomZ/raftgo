@@ -1498,3 +1498,82 @@ exit=0 (вывод пуст)
 S3-CORE готова. Ограничений нет. Ветки и снимки lab1–lab4 не менялись,
 контроллер, другие карточки и агенты не запускались, push не выполнялся.
 Следующий доступный ID — S3-API.
+
+## S3-API — HTTP CRUD строк (2026-10-31)
+
+Ветка `main`, база `bb2f6a607f8b5b0dd41fbc6a83158b5c8bec8b47`, checkout
+`/home/bogdan/rafting` перед началом чистый. Зависимость S3-CORE готова.
+Карточка прошла «В работе» → «Готово» после всех проверок.
+
+Изменены `server/kv.go`, добавлен `server/http_kv_test.go`, обновлены
+`docs/api.md`, `Kanban.md` и этот журнал.
+
+POST/PUT теперь отвергают неверный UTF-8, неизвестные/повторные поля и неточный
+регистр имён, null и нестроковые значения, лишний JSON и поле expected вне CAS.
+Ключ проверяется на UTF-8 и 1..1024 байта после URL-декодирования. Существующий
+лимит полной внутренней KV-команды 65536 байт сохранён и описан явно. HEAD,
+который ServeMux допускает для GET, теперь выполняет чтение с барьером,
+а не предлагает команду с пустой операцией. CAS/lock полного main сохранены.
+
+Новые HTTP-тесты с реальным Raft и виртуальным временем проверяют:
+
+- POST 201/409 с сохранением прежнего значения, PUT upsert 200, GET/DELETE
+  отсутствующего ключа 404; пустые строки, Unicode, JSON-подобные значения.
+- Ключи с Unicode, пробелом, экранированными `/`, `?`, `#`, `%`, буквальной
+  строкой `%2F`, плюс encoded dot segments. Декодирование не меняет ключ.
+- Ключ ровно 1024 UTF-8 байта; отклонение 1025/1026 байт и неверного UTF-8
+  на всех четырёх методах. `/kv/` без ключа — 404. Неверные тела не попадают
+  в лог; полная команда ровно 65536 байт проходит, следующий байт даёт 400.
+- Follower GET/PUT возвращают 307 с исходным экранированием и query;
+  неизвестный лидер — 503 с Retry-After: 1, запись не предлагается.
+- Успех PUT ждёт consumer apply даже после commit. HEAD не меняет лог.
+- При изоляции 504 содержит index/term и неизвестный исход, в логе ровно
+  одно предложение, KV не изменён. После восстановления кворума та же запись
+  применяется без второго запроса и становится доступна через GET.
+
+Существующие `TestKVReadWaitsForApplication`,
+`TestKVReadCancellationLeadershipAndIsolation` и
+`TestKVEntriesCannotInjectStateMachineCommands` также прошли: GET ждёт apply,
+изолированный stale leader с существующим значением не отвечает успешным GET,
+а `/entries` отвергает внутренний префикс, в том числе после Unicode-escape.
+Полный HTTP cluster test прошёл с CAS/lock и failover; core не менялся.
+
+Фактические проверки (Go 1.27.3, go.mod 1.27.1 сохранён):
+
+```text
+$ go build ./...
+exit=0 (вывод пуст)
+$ go test -count=1 ./...
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv        0.002s
+ok  raftgo/raft      1.443s
+ok  raftgo/server    6.648s
+ok  raftgo/storage   0.003s
+?   raftgo/transport [no test files]
+exit=0
+$ go test -race -count=1 ./...
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv        1.007s
+ok  raftgo/raft      9.662s
+ok  raftgo/server    8.249s
+ok  raftgo/storage   1.031s
+?   raftgo/transport [no test files]
+exit=0
+$ go vet ./...
+exit=0 (вывод пуст; .golangci.yml отсутствует)
+$ gofmt -l .
+exit=0 (вывод пуст)
+$ go test ./server -run '^TestHTTPKV' -count=1 -v
+PASS все пять TestHTTPKV; ok raftgo/server 0.043s
+exit=0
+$ go test -race -count=20 ./server -run '^(TestHTTPKV|TestKVRead|TestKVEntries)'
+ok  raftgo/server 7.158s
+exit=0
+$ git diff --check
+exit=0 (вывод пуст)
+```
+
+S3-API готова, ограничений нет. Docker и ручной UI относятся к приёмке
+этапа S3-DEMO и здесь не запускались. Снимки lab1–lab4 не менялись;
+ветки/worktree/копии, другие карточки, агенты и push не запускались,
+контроллер и его состояние не изменялись. Следующий доступный ID — S3-UI.
