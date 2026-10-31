@@ -1,0 +1,104 @@
+package server
+
+import (
+	"bytes"
+	"context"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+	"unicode/utf8"
+)
+
+// kvUI forwards CRUD only to fixed members. Public redirects are matched exactly
+// and mapped to internal endpoints; credentials and arbitrary paths never pass.
+func (a *API) kvUI(mux *http.ServeMux) {
+	members := append([]Member(nil), a.Members...)
+	client := &http.Client{
+		Transport:     &http.Transport{MaxIdleConnsPerHost: 2, IdleConnTimeout: 30 * time.Second},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	for _, method := range []string{"GET", "POST", "PUT", "DELETE"} {
+		mux.HandleFunc(method+" /cluster/kv/{id}", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == "HEAD" {
+				w.WriteHeader(405)
+				return
+			}
+			key := r.URL.Query().Get("key")
+			if key == "" || len(key) > 1024 || !utf8.ValidString(key) {
+				problem(w, 400, "key must be valid UTF-8, 1..1024 bytes")
+				return
+			}
+			// Escape dot-only keys too: ServeMux canonicalizes literal dot segments.
+			escaped := url.PathEscape(key)
+			if key == "." || key == ".." {
+				escaped = strings.ReplaceAll(key, ".", "%2E")
+			}
+			path := "/kv/" + escaped
+			target := ""
+			redirects := make(map[string]string)
+			for _, m := range members {
+				redirects[m.APIURL+path] = m.apiEndpoint() + path
+				if string(m.ID) == r.PathValue("id") {
+					target = m.apiEndpoint() + path
+				}
+			}
+			if target == "" {
+				problem(w, 404, "unknown member")
+				return
+			}
+			var raw []byte
+			if r.Method == "POST" || r.Method == "PUT" {
+				var err error
+				raw, err = io.ReadAll(http.MaxBytesReader(w, r.Body, 6*MaxCommandBytes+128))
+				if err != nil {
+					problem(w, 400, "request size limit exceeded")
+					return
+				}
+			}
+			ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+			defer cancel()
+			w.Header().Set("Cache-Control", "no-store")
+			visited := make(map[string]bool)
+			for !visited[target] {
+				visited[target] = true
+				req, err := http.NewRequestWithContext(ctx, r.Method, target, bytes.NewReader(raw))
+				if err != nil {
+					problem(w, 503, "invalid configured endpoint")
+					return
+				}
+				req.Header.Set("Content-Type", "application/json")
+				resp, err := client.Do(req)
+				if err != nil {
+					problem(w, 504, "response unavailable; outcome unknown for writes; request was not retried")
+					return
+				}
+				if resp.StatusCode != 307 {
+					data, err := io.ReadAll(io.LimitReader(resp.Body, 6*MaxCommandBytes+1024))
+					resp.Body.Close()
+					if err != nil {
+						problem(w, 504, "response lost; outcome unknown for writes; request was not retried")
+						return
+					}
+					w.Header().Set("Content-Type", "application/json")
+					if retry := resp.Header.Get("Retry-After"); retry != "" {
+						w.Header().Set("Retry-After", retry)
+					}
+					w.WriteHeader(resp.StatusCode)
+					_, _ = w.Write(data)
+					return
+				}
+				location := resp.Header.Get("Location")
+				resp.Body.Close()
+				next, ok := redirects[location]
+				if !ok {
+					problem(w, 503, "leader is not a configured member")
+					return
+				}
+				target = next
+			}
+			problem(w, 503, "leader redirect cycle")
+		})
+	}
+}

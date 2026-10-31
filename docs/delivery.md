@@ -1577,3 +1577,114 @@ S3-API готова, ограничений нет. Docker и ручной UI о
 этапа S3-DEMO и здесь не запускались. Снимки lab1–lab4 не менялись;
 ветки/worktree/копии, другие карточки, агенты и push не запускались,
 контроллер и его состояние не изменялись. Следующий доступный ID — S3-UI.
+
+## S3-UI — Форма CRUD (2026-10-31)
+
+Ветка `main`, база `fa0165d96542c826579438e20e8903de7c5a869d`, checkout
+`/home/bogdan/rafting` перед началом чистый. Зависимость S3-API готова.
+Карточка переведена «В работе» → «Готово» после проверок.
+
+Изменены `server/http.go`, `server/ui.go`, `server/ui/index.html`,
+`server/ui/election.css`, `server/ui_test.go`; добавлены `server/ui/kv.js`,
+`server/ui_kv.go`, `server/ui_kv_test.go`. Обновлены `docs/api.md`,
+`Kanban.md` и этот журнал.
+
+Форма Create/Get/Put/Delete имеет независимый выбор участника, ключ и значение,
+показывает контекст запроса, HTTP-код и полный JSON-ответ как текст. Пустые строки
+различимы, HTML не исполняется. Результат линейризуемого GET отделён от локальной
+диагностики и не меняется при фоновом опросе. Перед новым запросом старый ответ
+очищается. Понятны 404/409/503/504; при таймауте записи показан неизвестный исход,
+автоповтора нет. Экран выборов, диагностика устаревания и строковый лог сохранены.
+
+Same-origin CRUD пересылается на обычный API выбранного фиксированного участника.
+Только явный 307 на точный публичный адрес другого участника с тем же ключом
+позволяет пересылку с сохранением метода/тела; cookies, произвольные URL/пути,
+токены и query клиента не пересылаются. Ключ передаётся форме сервера через
+query, чтобы браузер не нормализовал `.`/`..`, затем сервер кодирует его в один
+сегмент `/kv/{key}`. После 503/504/потери ответа нет повторов; index/term и
+Retry-After сохраняются. Полный main с CAS/lock сохранён, будущие UI-операции
+не добавлены. Выделение lab3 остаётся только S3-DEMO.
+
+Фактические обязательные проверки (Go 1.27.3, go.mod 1.27.1 сохранён;
+`.golangci.yml` отсутствует):
+
+```text
+$ go build ./...
+exit=0 (вывод пуст)
+$ go test -count=1 ./...
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv        0.002s
+ok  raftgo/raft      1.271s
+ok  raftgo/server    6.570s
+ok  raftgo/storage   0.005s
+?   raftgo/transport [no test files]
+exit=0
+$ go test -race -count=1 ./...
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv        1.011s
+ok  raftgo/raft      10.013s
+ok  raftgo/server    8.169s
+ok  raftgo/storage   1.031s
+?   raftgo/transport [no test files]
+exit=0
+$ go vet ./...
+exit=0 (вывод пуст)
+$ gofmt -l .
+exit=0 (вывод пуст)
+$ git diff --check
+exit=0 (вывод пуст)
+$ node --check server/ui/kv.js
+$ node --check server/ui/election.js
+оба exit=0 (Node только для проверки синтаксиса, UI не требует Node)
+$ go test -race ./server -run '^TestKVUI' -count=1 -v
+PASS TestKVUIForwarding
+PASS TestKVUILostResponseAndUnavailableLeader (GET/POST/PUT/DELETE)
+ok raftgo/server 1.045s
+exit=0
+```
+
+HTTP-тесты проверяют четыре метода через follower, экранирование ключа,
+сохранение тела, HTTP-кодов и index/term, большие JSON-экранированные ответы,
+запрет посторонних Location/другого ключа/циклов/CAS-путей, отсутствие cookies
+и токенов, потерю ответа без повторной отправки и Retry-After при 503.
+Первый локальный прогон обнаружил ожидаемый старый номер этапа в routing-тесте;
+ожидание обновлено на этап 3, последующие проверки выше успешны.
+
+Реальный Firefox 158 (headless, Marionette), пять Docker-процессов отдельного
+проекта `raftgo-scenarios`, собранных из итогового кода main без смены checkout:
+
+```text
+$ docker compose -p raftgo-scenarios -f scenarios/compose.yaml up -d --build
+exit=0
+$ python3 /tmp/raftgo-s3-ui-browser.py
+PASS follower CRUD: 201/200/404/409; empty, HTML, Unicode, encoded keys and dot segments; explicit GET survives polling; election/string log retained
+PASS leader pause: CRUD through follower after election; stale node visible
+PASS no majority: real PUT 504 index/term, unknown outcome, no retry; GET and PUT 503 without leader; old GET value cleared
+PASS recovery; same-origin resources; mobile without page overflow
+PASS cleanup: test browser closed; five Docker nodes resumed
+exit=0
+```
+
+Ввод и кнопки проверены в браузере через DOM; ответы сервера реальные, без
+подмены fetch (обёртка только считала запросы). До восстановления большинства
+после PUT 504 отправлен ровно один изменяющий запрос. GET без кворума не
+показывает старое значение как успешное. Все обращения браузера same-origin.
+Просмотрен `/tmp/raftgo-s3-ui-mobile.png`: форма, результат и локальный лог
+разделены, кнопки доступны, горизонтального переполнения страницы нет.
+Логи: `/tmp/raftgo-s3-ui-{build,browser,down}.log`, harness
+`/tmp/raftgo-s3-ui-browser.py`; снимки normal/failover/no-quorum/mobile там же.
+Два первых прогона harness были исправлены: ошибка кавычек в генерируемом JS
+и неверное ожидание отсутствия поля value в 404 (API возвращает пустую строку
+вместе с error). Продуктовый код после этих прогонов не менялся; итоговый
+полный браузерный прогон выше успешен. Свой стенд после unpause удалён целиком
+через compose down; существующий проект `rafting` не менялся.
+
+Ограничений нет. Lab1–lab4, история main, контроллер и его состояние не менялись.
+Другие карточки, агенты и push не запускались; ветки/worktree/копии проекта
+не создавались. Следующий доступный ID — S3-DEMO, здесь не запускается.
+
+После итогового обновления документации и канбана обязательный набор повторён:
+`go build ./...`, `go test -count=1 ./...`, `go test -race -count=1 ./...`,
+`go vet ./...`, `gofmt -l .`, `git diff --check` — все exit=0, форматирование
+и diff без замечаний. Повторный test: kv 0.001s, raft 0.919s, server 6.383s,
+storage 0.003s; race: kv 1.006s, raft 6.173s, server 7.695s, storage 1.013s.

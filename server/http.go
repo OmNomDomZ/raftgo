@@ -123,6 +123,7 @@ func (a *API) Handler() http.Handler {
 		}{s, a.Members, "local", out})
 	}
 	a.logUI(mux, status)
+	a.kvUI(mux)
 	mux.HandleFunc("GET /status", status)
 	mux.HandleFunc("GET /election", status)
 	mux.HandleFunc("GET /log", status)

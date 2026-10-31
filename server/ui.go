@@ -29,12 +29,12 @@ type memberObservation struct {
 }
 
 func (a *API) electionUI(mux *http.ServeMux) {
-	for path, asset := range map[string]string{"/{$}": "index.html", "/ui/election.js": "election.js", "/ui/election.css": "election.css"} {
+	for path, asset := range map[string]string{"/{$}": "index.html", "/ui/election.js": "election.js", "/ui/kv.js": "kv.js", "/ui/election.css": "election.css"} {
 		data, err := electionAssets.ReadFile("ui/" + asset)
 		if err != nil {
 			panic(err)
 		}
-		contentType := map[string]string{"index.html": "text/html; charset=utf-8", "election.js": "text/javascript; charset=utf-8", "election.css": "text/css; charset=utf-8"}[asset]
+		contentType := map[string]string{"index.html": "text/html; charset=utf-8", "election.js": "text/javascript; charset=utf-8", "kv.js": "text/javascript; charset=utf-8", "election.css": "text/css; charset=utf-8"}[asset]
 		mux.HandleFunc("GET "+path, func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", contentType)
 			w.Header().Set("X-Content-Type-Options", "nosniff")

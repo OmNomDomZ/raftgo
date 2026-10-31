@@ -14,3 +14,7 @@ dl { margin: 16px 0; }dt { color: #526777; font-size: .8rem; margin-top: 13px; }
 .log-panel { margin-top: 28px; padding: 22px; background: white; border: 1px solid #cbd6df; border-radius: 8px; }
 label { display: block; margin: 12px 0 6px; } select, textarea { font: inherit; max-width: 100%; box-sizing: border-box; padding: 8px; } textarea { display: block; width: 100%; margin-bottom: 12px; }
 .log-scroll { overflow-x: auto; } table { border-collapse: collapse; width: 100%; font-size: .9rem; } th, td { text-align: left; padding: 10px; border-bottom: 1px solid #cbd6df; } td:last-child { white-space: pre-wrap; overflow-wrap: anywhere; min-width: 140px; } .tail { background: #fff1d6; } .committed { background: #f0faf5; } #result { white-space: pre-wrap; overflow-wrap: anywhere; }
+input { font: inherit; width: 100%; box-sizing: border-box; padding: 8px; }
+.kv-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+#kv-result, #kv-data { white-space: pre-wrap; overflow-wrap: anywhere; }
+#kv-data { background: #f1f4f7; padding: 12px; border-radius: 6px; }
