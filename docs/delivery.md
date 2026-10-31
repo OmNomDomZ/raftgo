@@ -1695,3 +1695,13 @@ storage 0.003s; race: kv 1.006s, raft 6.173s, server 7.695s, storage 1.013s.
 checkout чистый. Следующая карточка S3-DEMO выбрана по поручению пользователя;
 S3-UI готова. Карточка переведена «В работе». Готовится lab3 в том же checkout,
 принятые lab1/lab2 не меняются. SHA базы кандидата будет зафиксирован отдельно.
+
+Подготовлен `docs/demo3.md` с воспроизводимым запуском и браузерной проверкой.
+На main перед выделением кандидата: build/test/race/vet/gofmt и diff --check
+exit=0. Test: kv 0.002s, raft 1.004s, server 6.493s, storage 0.003s;
+race: kv 1.006s, raft 7.713s, server 7.799s, storage 1.013s.
+Docker task1, task2, task3 — PASS, каждый exit=0; task2 заменил конфликтный
+хвост на пяти репликах, task3 получил PUT 504 и GET 503 без кворума.
+Логи `/tmp/raftgo-s3-demo-main-{build,task1,task2,task3,down}.log`.
+Свой стенд полностью удалён перед переключением. Существующий проект rafting
+не менялся. После этого коммита готовится snapshot/lab3 от его точного SHA.
