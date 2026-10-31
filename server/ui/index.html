@@ -1,8 +1,8 @@
 <!doctype html>
 <html lang="ru">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Raft · CRUD</title><link rel="stylesheet" href="/ui/election.css"><script src="/ui/election.js" defer></script><script src="/ui/kv.js" defer></script></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Raft · CAS и lock</title><link rel="stylesheet" href="/ui/election.css"><script src="/ui/election.js" defer></script><script src="/ui/kv.js" defer></script></head>
 <body><main>
-<header><span class="eyebrow">RAFTGO / ЭТАП 3</span><h1>Выборы, строковый лог и KV</h1><p>Пять узлов · кворум 3 · безопасная память</p></header>
+<header><span class="eyebrow">RAFTGO / ЭТАП 4</span><h1>Выборы, строковый лог и KV</h1><p>Пять узлов · кворум 3 · безопасная память</p></header>
 <section class="notice"><strong>Независимые локальные наблюдения</strong><p>Опрос неатомарный: узлы отвечают в разное время. Роль Leader не доказывает наличие кворума. Доступность HTTP не означает доступность RPC.</p></section>
 <div class="toolbar"><p id="poll" role="status">Загрузка состава…</p><button id="refresh" type="button">Обновить</button></div>
 <section id="nodes" aria-label="Узлы кластера"></section>
@@ -17,16 +17,22 @@
 <div class="log-scroll"><table><thead><tr><th>Index</th><th>Term</th><th>Вид</th><th>Подтверждение</th><th>Строка</th></tr></thead><tbody id="entries"></tbody></table></div>
 </section>
 <section class="log-panel" aria-labelledby="kv-title">
-<h2 id="kv-title">KV · Create / Get / Put / Delete</h2>
+<h2 id="kv-title">KV · CRUD, CAS и lock</h2>
 <p>GET читает через кворумный барьер и ждёт apply. Его результат отделён от локальных диагностических снимков выше. Это ответ на момент запроса, он не обновляется опросом состояния.</p>
 <form id="kv-form">
 <label for="kv-member">Узел для запроса (follower направит к лидеру)</label><select id="kv-member"></select>
 <label for="kv-key">Ключ (1–1024 байта UTF-8)</label><input id="kv-key" required autocomplete="off">
 <label for="kv-value">Значение (строка, в том числе пустая)</label><textarea id="kv-value" rows="3"></textarea>
-<div class="kv-actions"><button type="submit" value="POST">Create</button><button type="submit" value="GET">Get</button><button type="submit" value="PUT">Put</button><button type="submit" value="DELETE">Delete</button></div>
+<label for="kv-expected">Expected для CAS (сравнение значения; ABA не обнаруживается)</label><textarea id="kv-expected" rows="2"></textarea>
+<label for="kv-token">X-Lock-Token для этого запроса (пусто — без токена)</label><input id="kv-token" autocomplete="off" spellcheck="false">
+<p>Токен передаётся только из этого поля, явно для CRUD / CAS / Unlock. Для Lock поле игнорируется. После смены ключа поле очищается.</p>
+<div class="kv-actions"><button type="submit" value="POST">Create</button><button type="submit" value="GET">Get</button><button type="submit" value="PUT">Put</button><button type="submit" value="DELETE">Delete</button><button type="submit" value="CAS">CAS: expected → значение (new)</button><button type="submit" value="LOCK">Захватить lock</button><button type="submit" value="UNLOCK">Освободить lock</button></div>
 </form>
-<p id="kv-result" role="status">Результат CRUD появится после ответа API.</p>
-<pre id="kv-data" aria-label="Ответ CRUD"></pre>
+<h3>Токены, полученные этой вкладкой</h3>
+<ul id="kv-owned" aria-label="Токены владельца"></ul>
+<p>Токены хранятся только в памяти этой страницы, не передаются другой вкладке автоматически и теряются при перезагрузке или закрытии. Сохраните токен вручную до ухода. Потерянный токен восстановить через UI нельзя. Нет TTL и auto-unlock: закрытие вкладки, удаление значения, таймаут и смена лидера не освобождают lock. Захват возможен и без значения; lock не реентерабелен. Токен действует только в одной жизни кластера; после полного сброса стенда старые токены не используйте.</p>
+<p id="kv-result" role="status">Результат операции появится после ответа API.</p>
+<pre id="kv-data" aria-label="Ответ KV"></pre>
 <p>504 или потеря ответа при изменении — неизвестный исход, а не откат. Автоповтора нет. Повторное нажатие отправит новую операцию. После неудачного GET подтверждённого значения нет.</p>
 </section>
 <footer><p>Автообновление каждую секунду после ответа. Через 3 секунды без успешного опроса данные устаревают.</p><p>«Голос» — voted_for только текущего term; «Голоса кандидата» — votes только в роли Candidate, включая себя. История голосов неизвестна.</p><p>Для отказов используйте pause/unpause или сетевую изоляцию. Завершение процесса теряет память; stop/start не восстанавливает прежний узел.</p></footer>

@@ -17,7 +17,7 @@ func TestKVUIForwarding(t *testing.T) {
 	value := strings.Repeat("<", 20000)
 	leader := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
-		if r.URL.EscapedPath() != "/kv/a%2Fb%25%3F" || r.URL.RawQuery != "" || r.Header.Get("Cookie") != "" || r.Header.Get("X-Lock-Token") != "" {
+		if r.URL.EscapedPath() != "/kv/a%2Fb%25%3F" || r.URL.RawQuery != "" || r.Header.Get("Cookie") != "" || r.Header.Get("X-Lock-Token") != "secret" {
 			t.Errorf("unexpected request %s %v", r.URL, r.Header)
 		}
 		raw, _ := io.ReadAll(r.Body)
@@ -82,8 +82,12 @@ func TestKVUIForwarding(t *testing.T) {
 }
 
 func TestKVUILostResponseAndUnavailableLeader(t *testing.T) {
-	for _, method := range []string{"GET", "POST", "PUT", "DELETE"} {
-		t.Run(method, func(t *testing.T) {
+	for _, operation := range []string{"GET", "POST", "PUT", "DELETE", "POST/cas", "POST/lock", "DELETE/lock"} {
+		method, suffix, _ := strings.Cut(operation, "/")
+		if suffix != "" {
+			suffix = "/" + suffix
+		}
+		t.Run(operation, func(t *testing.T) {
 			var calls atomic.Int32
 			peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				calls.Add(1)
@@ -97,7 +101,7 @@ func TestKVUILostResponseAndUnavailableLeader(t *testing.T) {
 			defer peer.Close()
 			h := electionAPI(t, []Member{{ID: "peer", APIURL: peer.URL}}).Handler()
 			w := httptest.NewRecorder()
-			h.ServeHTTP(w, httptest.NewRequest(method, "/cluster/kv/peer?key=key", strings.NewReader(`{"value":""}`)))
+			h.ServeHTTP(w, httptest.NewRequest(method, "/cluster/kv/peer"+suffix+"?key=key", strings.NewReader(`{"value":""}`)))
 			if w.Code != 504 || calls.Load() != 1 {
 				t.Fatal(w.Code, calls.Load())
 			}
@@ -113,5 +117,63 @@ func TestKVUILostResponseAndUnavailableLeader(t *testing.T) {
 	h.ServeHTTP(w, httptest.NewRequest("GET", "/cluster/kv/peer?key=..", nil))
 	if w.Code != 503 || w.Header().Get("Retry-After") != "1" {
 		t.Fatal(w.Code, w.Header())
+	}
+}
+
+// All owner operations preserve the explicit token across a public 307 while
+// never following a redirect that changes operation, key, or membership.
+func TestKVUIAtomicForwarding(t *testing.T) {
+	for _, op := range []struct{ method, suffix, body string }{
+		{"GET", "", ""}, {"POST", "", `{"value":"new"}`},
+		{"PUT", "", `{"value":"new"}`}, {"DELETE", "", ""},
+		{"POST", "/cas", `{"expected":"old","value":"new"}`},
+		{"POST", "/lock", ""}, {"DELETE", "/lock", ""},
+	} {
+		t.Run(op.method+op.suffix, func(t *testing.T) {
+			var calls atomic.Int32
+			path := "/kv/a%2Fb" + op.suffix
+			peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				raw, _ := io.ReadAll(r.Body)
+				if r.Method != op.method || r.URL.EscapedPath() != path || string(raw) != op.body || r.Header.Get("X-Lock-Token") != "42" || r.Header.Get("Cookie") != "" {
+					t.Errorf("wrong forward: %s %s %s %v", r.Method, r.URL, raw, r.Header)
+				}
+				writeJSON(w, 423, map[string]any{"error": "locked", "index": 9, "term": 2})
+			}))
+			defer peer.Close()
+			var location atomic.Value
+			location.Store("http://leader.invalid" + path)
+			follower := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Location", location.Load().(string))
+				w.WriteHeader(307)
+			}))
+			defer follower.Close()
+			h := electionAPI(t, []Member{{ID: "f", APIURL: "http://f.invalid", InternalAPIURL: follower.URL}, {ID: "l", APIURL: "http://leader.invalid", InternalAPIURL: peer.URL}}).Handler()
+			request := func(tokens ...string) *httptest.ResponseRecorder {
+				r := httptest.NewRequest(op.method, "/cluster/kv/f"+op.suffix+"?key=a%2Fb", strings.NewReader(op.body))
+				for _, token := range tokens {
+					r.Header.Add("X-Lock-Token", token)
+				}
+				r.Header.Set("Cookie", "private=yes")
+				w := httptest.NewRecorder()
+				h.ServeHTTP(w, r)
+				return w
+			}
+			if w := request("42"); w.Code != 423 || !strings.Contains(w.Body.String(), `"index":9`) {
+				t.Fatal(w.Code, w.Body)
+			}
+			location.Store("http://leader.invalid/kv/other" + op.suffix)
+			if w := request("42"); w.Code != 503 {
+				t.Fatal(w.Code)
+			}
+			for _, tokens := range [][]string{{"42", "43"}, {"42,43"}, {strings.Repeat("x", 1025)}} {
+				if w := request(tokens...); w.Code != 400 {
+					t.Fatal(w.Code)
+				}
+			}
+			if calls.Load() != 1 {
+				t.Fatal("unexpected retry", calls.Load())
+			}
+		})
 	}
 }

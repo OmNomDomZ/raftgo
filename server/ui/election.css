@@ -18,3 +18,6 @@ input { font: inherit; width: 100%; box-sizing: border-box; padding: 8px; }
 .kv-actions { display: flex; flex-wrap: wrap; gap: 10px; }
 #kv-result, #kv-data { white-space: pre-wrap; overflow-wrap: anywhere; }
 #kv-data { background: #f1f4f7; padding: 12px; border-radius: 6px; }
+
+#kv-owned { padding-left: 20px; overflow-wrap: anywhere; }
+#kv-owned li { margin: 10px 0; }

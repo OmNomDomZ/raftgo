@@ -11,7 +11,7 @@ import (
 	"unicode/utf8"
 )
 
-// kvUI forwards CRUD only to fixed members. Public redirects are matched exactly
+// kvUI forwards CRUD/CAS/locks only to fixed members. Public redirects are matched exactly
 // and mapped to internal endpoints; credentials and arbitrary paths never pass.
 func (a *API) kvUI(mux *http.ServeMux) {
 	members := append([]Member(nil), a.Members...)
@@ -19,8 +19,8 @@ func (a *API) kvUI(mux *http.ServeMux) {
 		Transport:     &http.Transport{MaxIdleConnsPerHost: 2, IdleConnTimeout: 30 * time.Second},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
-	for _, method := range []string{"GET", "POST", "PUT", "DELETE"} {
-		mux.HandleFunc(method+" /cluster/kv/{id}", func(w http.ResponseWriter, r *http.Request) {
+	for _, route := range []string{"GET /cluster/kv/{id}", "POST /cluster/kv/{id}", "PUT /cluster/kv/{id}", "DELETE /cluster/kv/{id}", "POST /cluster/kv/{id}/cas", "POST /cluster/kv/{id}/lock", "DELETE /cluster/kv/{id}/lock"} {
+		mux.HandleFunc(route, func(w http.ResponseWriter, r *http.Request) {
 			if r.Method == "HEAD" {
 				w.WriteHeader(405)
 				return
@@ -36,6 +36,16 @@ func (a *API) kvUI(mux *http.ServeMux) {
 				escaped = strings.ReplaceAll(key, ".", "%2E")
 			}
 			path := "/kv/" + escaped
+			if strings.HasSuffix(r.Pattern, "/cas") {
+				path += "/cas"
+			} else if strings.HasSuffix(r.Pattern, "/lock") {
+				path += "/lock"
+			}
+			token := r.Header.Get("X-Lock-Token")
+			if len(r.Header.Values("X-Lock-Token")) > 1 || len(token) > 1024 || !utf8.ValidString(token) || strings.ContainsAny(token, ",\r\n") {
+				problem(w, 400, "expected one lock token, at most 1024 UTF-8 bytes")
+				return
+			}
 			target := ""
 			redirects := make(map[string]string)
 			for _, m := range members {
@@ -49,7 +59,7 @@ func (a *API) kvUI(mux *http.ServeMux) {
 				return
 			}
 			var raw []byte
-			if r.Method == "POST" || r.Method == "PUT" {
+			if r.Method != "GET" {
 				var err error
 				raw, err = io.ReadAll(http.MaxBytesReader(w, r.Body, 6*MaxCommandBytes+128))
 				if err != nil {
@@ -68,7 +78,12 @@ func (a *API) kvUI(mux *http.ServeMux) {
 					problem(w, 503, "invalid configured endpoint")
 					return
 				}
+				// Prevent transport replay even though the body is buffered for 307.
+				req.GetBody = nil
 				req.Header.Set("Content-Type", "application/json")
+				if token != "" {
+					req.Header.Set("X-Lock-Token", token)
+				}
 				resp, err := client.Do(req)
 				if err != nil {
 					problem(w, 504, "response unavailable; outcome unknown for writes; request was not retried")
