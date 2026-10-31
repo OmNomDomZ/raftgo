@@ -22,7 +22,8 @@ main: полный код + Memory + инфраструктура + канбан
 Исторические отчёты ниже описывают прежний процесс, их пути не инструкции запуска.
 `lab1` принят в S1-DEMO на `a2f486172f435f2e469802935ecec43048abee69`.
 `lab2` принят в S2-DEMO на `0006d8422076f19336ad9ab8cdb5a9431fc2d4c6`.
-`lab3`–`lab4` пока не приняты; не создавать их заранее из полного main.
+`lab3` принят в S3-DEMO на `d93c829d8de20cfccf92ee06cf0b577b66b46010`.
+`lab4` пока не принят; не создавать его заранее из полного main.
 
 ## Задание агенту и очередь
 
@@ -109,7 +110,7 @@ docker compose -p raftgo-scenarios -f scenarios/compose.yaml down
 
 ## Реестр приёмки
 
-Этапы 1–2 приняты; остальные строки заполняются после соответствующих DEMO.
+Этапы 1–3 приняты; lab4 заполняется после соответствующей DEMO.
 
 | Результат | Принятый SHA | Go/race | Docker | UI | Статус |
 | --- | --- | --- | --- | --- | --- |
@@ -117,7 +118,7 @@ docker compose -p raftgo-scenarios -f scenarios/compose.yaml down
 | prepare/in-memory | `4f6499180cb7c22d429507506431218a445be18b` | build/test/race/vet/gofmt PASS | task1–4, cleanup и полный сброс PASS | Не требуется | B0–B2 готовы |
 | lab1 | `a2f486172f435f2e469802935ecec43048abee69` | build/test/race/vet/gofmt PASS | task1 и cleanup PASS | Firefox PASS | S1-DEMO готова |
 | lab2 | `0006d8422076f19336ad9ab8cdb5a9431fc2d4c6` | build/test/race/vet/gofmt PASS | task1–2, конфликт хвоста и cleanup PASS | Firefox PASS | S2-DEMO готова |
-| lab3 | — | — | — | — | Не начат |
+| lab3 | `d93c829d8de20cfccf92ee06cf0b577b66b46010` | build/test/race/vet/gofmt PASS | task1–3 и cleanup PASS | Firefox PASS | S3-DEMO готова |
 | lab4 | — | — | — | — | Не начат |
 
 В строке результата записывать реальный SHA проверенного кода. При изменениях
@@ -1705,3 +1706,136 @@ Docker task1, task2, task3 — PASS, каждый exit=0; task2 заменил �
 Логи `/tmp/raftgo-s3-demo-main-{build,task1,task2,task3,down}.log`.
 Свой стенд полностью удалён перед переключением. Существующий проект rafting
 не менялся. После этого коммита готовится snapshot/lab3 от его точного SHA.
+
+### S3-DEMO — итоговая приёмка lab3
+
+- Исходный main: `6e6a5c426c006cc18b85598f738037fac6854b7f`.
+- Точная база кандидата main: `718376b1c2710581fdc9b41f88c2c101dae55f8e`
+  (инструкция demo3 и результаты main); перед переключением checkout чистый,
+  свой стенд полностью удалён. Другие агенты и контроллер не запускались.
+- Кандидат `snapshot/lab3` и принятый `lab3`:
+  `d93c829d8de20cfccf92ee06cf0b577b66b46010`.
+- Ветка lab3 создана только после успешных проверок этого SHA; checkout
+  возвращён в main, снимок обратно не мержился. lab1/lab2 не перемещались,
+  lab4 не создавалась, push не выполнялся.
+
+Изменения в main: `docs/demo3.md`, `docs/delivery.md`, `Kanban.md`, `README.md`.
+Полный рабочий код main сохранён. В отдельном снимке изменены `kv/store.go`
+и тесты (только CRUD, без модели и операций этапа 4), `server/kv.go`,
+`server/http.go`, HTTP/replay/safety/UI-proxy тесты; ReadIndex, ожидание apply,
+запрет внутреннего префикса /entries и все core safety-тесты сохранены.
+Core `raft/` не менялся. Удалён только тестовый код будущих функций, смешанные
+replay/failover-тесты переведены на CRUD с сохранением проверки результатов.
+CRUD-панель UI этапа 3, выборы и add сохранены. В runner отсутствует task4,
+`all` выполняет 1–3; удалены каталог task4, autokanban, tools/autokanban,
+канбан, задачи и журнал разработки, прежний demo2. AGENTS направляет разработку
+в main. README, API и onboarding описывают возможности снимка; docs/stages.md
+оставлен как план-контракт. Личные .obsidian не отслеживаются Git и не удалялись.
+
+Фактические проверки точного SHA d93c829 (Go 1.27.3, go.mod 1.27.1 сохранён;
+.golangci.yml отсутствует):
+
+```text
+$ go build ./...
+exit=0 (вывод пуст)
+$ go test -count=1 ./...
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv        0.001s
+ok  raftgo/raft      0.983s
+ok  raftgo/server    6.423s
+ok  raftgo/storage   0.002s
+?   raftgo/transport [no test files]
+exit=0
+$ go test -race -count=1 ./...
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv        1.006s
+ok  raftgo/raft      6.870s
+ok  raftgo/server    7.860s
+ok  raftgo/storage   1.023s
+?   raftgo/transport [no test files]
+exit=0
+$ go vet ./...
+exit=0 (вывод пуст)
+$ gofmt -l .
+exit=0 (вывод пуст)
+$ git diff --check
+exit=0 (вывод пуст)
+$ node --check server/ui/election.js
+$ node --check server/ui/kv.js
+$ python3 -m py_compile scenarios/run.py
+все exit=0
+```
+
+Предварительная сборка до коммита обнаружила неиспользуемую переменную,
+оставшуюся после удаления сравнения; исправлена до d93c829. Итоговые проверки
+выше выполнены после коммита. Проверка tracked tree и текстов моделей,
+декодеров, маршрутов, UI и сценариев: PASS отсутствие кода этапа 4, контроллера
+и личных настроек; POST /kv/probe/cas и /kv/probe/lock на всех пяти узлах — 404.
+
+```text
+$ docker compose -p raftgo-scenarios -f scenarios/compose.yaml up -d --build
+exit=0
+$ python3 scenarios/run.py all
+PASS task1
+PASS task2
+PASS task3
+exit=0
+```
+
+Task1 проверил перевыборы и невозможность выбрать лидера меньшинством.
+Task2 проверил follower redirect, commit/apply, догоняющую репликацию,
+сохранение committed prefix и замену конфликтного хвоста на всех пяти репликах.
+Task3 проверил 201/409/404/200 CRUD, пустую/Unicode/JSON-строку, чтение после
+смены лидера и pause/unpause всех процессов; без кворума PUT 504, GET 503.
+Логи `/tmp/raftgo-s3-demo-candidate-{build,scenarios}.log`.
+
+Реальный Firefox 158.0.1 headless с Marionette, DOM-ввод и кнопки, реальные
+ответы пяти Docker-процессов на том же d93c829:
+
+```text
+$ /tmp/raftgo-s3-demo-venv/bin/python /tmp/raftgo-s3-demo-browser.py
+PASS browser CRUD, string add, empty/Unicode/HTML/escaped/dot keys; explicit GET retained
+PASS browser leader pause, value retained, stale card visible
+PASS browser no quorum PUT 504 with index/term, no automatic retry, GET/PUT 503, recovery
+PASS browser same-origin resources and mobile width
+Browser closed and scenario nodes resumed
+exit=0
+```
+
+CRUD через follower проверен для Create/Get/Put/Delete, включая повторный POST,
+отсутствующий DELETE, upsert, Unicode, пустое значение, HTML как текст,
+экранированные и dot-only ключи. Результат GET сохраняется при polling.
+После паузы лидера подтверждённое значение читается через нового лидера,
+устаревшая карточка видна. Без кворума PUT вернул 504 с index/term; UI показал
+неизвестный исход, Resource Timing подтвердил один запрос без автоповтора.
+GET/PUT после утраты лидерства — 503; старое успешное значение очищено.
+После восстановления PUT/GET успешны. Все ресурсы same-origin, ширина 390 px
+без горизонтального переполнения. Скриншот mobile просмотрен: карточки, лог,
+CRUD и ответ разделены, поля и кнопки доступны.
+
+Лог `/tmp/raftgo-s3-demo-browser.log`, harness `/tmp/raftgo-s3-demo-browser.py`,
+скриншоты `/tmp/raftgo-s3-demo-ui-{normal,failover,no-quorum,mobile}.png`.
+Два предварительных запуска harness исправлены без изменения продукта:
+нужен реальный binary /usr/lib/firefox/firefox; перехват fetch через Marionette
+мешал запросам, поэтому заменён наблюдением Resource Timing без подмены fetch.
+Итоговый прогон успешен. После завершения Python напечатал предупреждения
+деструктора mozprofile при shutdown; exit=0, браузер закрыт явно, это не сбой UI.
+
+Искусственный RuntimeError после pause и network disconnect node5 проверил
+finally runner: ошибка сохранена, пауза снята, IP/алиасы восстановлены,
+container ID и PID всех пяти узлов прежние, RAM не терялась; лидер согласован.
+`/tmp/raftgo-s3-demo-cleanup.log`: PASS, exit=0.
+
+Перед возвратом в main свой стенд полностью удалён через compose down (exit=0).
+Общий unpause уже работающих контейнеров вернул «not paused»; список paused
+проверен пустым, затем down завершён успешно. Существующий проект rafting
+и пользовательский Firefox не менялись. Ограничений приёмки нет.
+S3-DEMO готова, реестр и канбан обновлены. Следующий доступный ID — S4-CORE;
+другие карточки не запускались.
+
+После возврата в main и итогового обновления README/реестра/канбана повторены
+`go build ./...`, `go test -count=1 ./...`, `go test -race -count=1 ./...`,
+`go vet ./...`, `gofmt -l .`, `git diff --check` — все exit=0; build/vet/gofmt/diff
+без вывода. Test: kv 0.002s, raft 0.930s, server 6.549s, storage 0.003s;
+race: kv 1.006s, raft 6.542s, server 7.897s, storage 1.013s.
+Точный вывод: `/tmp/raftgo-s3-demo-final-go.log`.

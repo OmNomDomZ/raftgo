@@ -12,7 +12,6 @@ kanban-plugin: board
 
 ## В работе
 
-- [ ] [[docs/tasks#S3-DEMO — Сдача CRUD|S3-DEMO — Сдача CRUD]]
 
 
 
@@ -30,6 +29,8 @@ kanban-plugin: board
 ## На проверке
 
 ## Готово
+
+- [x] [[docs/tasks#S3-DEMO — Сдача CRUD|S3-DEMO — Сдача CRUD]]
 
 - [x] [[docs/tasks#S3-UI — Форма CRUD|S3-UI — Форма CRUD]]
 
