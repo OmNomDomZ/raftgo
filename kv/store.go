@@ -51,6 +51,11 @@ func (s *Store) Get(key, token string) Result {
 	return Result{Code: 200, Value: v}
 }
 
+// Apply executes one committed command, including its access check and CAS
+// comparison, atomically with respect to the caller's serialization. index must
+// be the positive Raft index, delivered once in increasing order (gaps for raw
+// entries and no-ops are allowed). Replay uses a fresh Store and the same indices;
+// this method does not deduplicate client retries or repeated delivery.
 func (s *Store) Apply(c Command, index uint64) Result {
 	r := s.apply(c, index)
 	r.Index = index
