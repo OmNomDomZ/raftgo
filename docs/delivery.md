@@ -2536,3 +2536,85 @@ unlock, same-origin и ширина 390 px PASS. Итоговый browser harnes
 Перед push выполнен fetch origin/main: удалённый SHA совпадал с исходной базой
 `d8bfa25123656d4288b62be97e14e7526e4ccf03`, доступен обычный fast-forward.
 Отправляется только main; принятые labN и исторические refs не отправляются.
+
+
+## R3 — Единая серверная проверка ключа и lock-токена (2026-10-31)
+
+Ветка `main`, база `35a6e53c50f73ec8dd4442601a1f144974df4080`.
+Checkout перед работой чистый, зависимость S4-DEMO готова. Статус «В работе»
+записан коммитом `6d020d2`. Пользователь поручил выбрать одну карточку,
+выполнить её и запушить изменения. Другие карточки и агенты не запускались,
+вся работа выполнена в том же checkout main.
+
+Изменены `server/kv.go`, `server/ui_kv.go`, добавлены
+`server/kv_validation.go`, `server/kv_validation_test.go`,
+`server/kv_token_validation_test.go`; обновлены `Kanban.md`, `docs/tasks.md`
+и этот журнал. Две приватные функции заменяют дублирующиеся проверки
+ключа и X-Lock-Token в обычном KV API и same-origin UI API.
+Извлечение ключа из PathValue/Query остаётся в обработчиках. Сохранены точные
+сообщения 400, лимиты байтов, UTF-8 и запрет неоднозначных токенов.
+Пустой токен допустим, нормализация и числовой разбор не добавлены;
+владение/устаревание проверяет Store со статусами 423/409. ReadIndex,
+apply, JSON-декодер, клиент и raft не менялись. Функции ключа/токена раздельны,
+тесты токена находятся в отдельном файле для будущего выделения lab3.
+
+Новые проверки обоих HTTP-входов охватывают ключи и токены 1024/1025 байт,
+включая многобайтные строки, невалидный UTF-8, пустой ключ, несколько
+значений заголовка (включая два пустых), запятую, CR и LF. Невалидные
+CRUD/CAS/lock/unlock и GET возвращают прежний JSON 400 и не увеличивают
+LastLogIndex. Пустой PathValue дополнительно проверен прямым вызовом
+HTTP-обработчика: штатный ServeMux возвращает 404 на отсутствующий сегмент,
+как и прежде. Допустимые ключи проверены через Store и реальную пересылку
+на httptest-сервер; допустимые токены — через результат apply и точное
+значение команды в логе, а также пересылку UI. Пустой токен принимается;
+непустой непрозрачный токен на свободном ключе даёт 409 после apply.
+Пробелы в ключе и токене не удаляются серверной проверкой.
+Существующие http_atomic/ui_kv/http_kv сохраняют проверки владельца,
+чужого/старого токена, блокировок, ReadIndex, failover и неизвестного исхода.
+
+Go `go1.27.3-X:nodwarf5 linux/amd64`; go.mod 1.27.1 сохранён,
+`.golangci.yml` отсутствует. Фактические проверки, все exit=0:
+
+```text
+$ go build ./...
+(без вывода)
+$ go test -count=1 ./...
+ok  raftgo/client  0.264s
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv      0.002s
+ok  raftgo/raft    1.090s
+ok  raftgo/server  6.654s
+ok  raftgo/storage 0.002s
+?   raftgo/transport [no test files]
+$ go test -race -count=1 ./...
+ok  raftgo/client  1.298s
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv      1.012s
+ok  raftgo/raft    6.509s
+ok  raftgo/server  8.392s
+ok  raftgo/storage 1.014s
+?   raftgo/transport [no test files]
+$ go vet ./...
+(без вывода)
+$ gofmt -l .
+(пусто)
+$ git diff --check
+(без вывода)
+```
+
+Дополнительная целевая проверка, exit=0:
+
+```text
+$ go test ./server -run 'Test(KVKeyValidation|KVTokenValidation|KVUIKeyValidation|KVUITokenValidation|HTTPAtomic|HTTPKV|KVUI)' -count=1
+ok  raftgo/server 0.278s
+```
+
+Ограничений выполнения карточки нет. Docker и ручной браузер не запускались:
+это серверный рефакторинг без изменения API/UI; выполнены Go-набор и проверки
+HTTP-входов из карточки. Приёмка этапа и пересдача снимков не поручены.
+Принятые lab1–lab4 сверены через for-each-ref и остались на прежних SHA.
+Следующий доступный ID — R4.
+
+Перед push выполнен fetch origin/main: удалённый SHA совпадал с исходной базой
+`35a6e53c50f73ec8dd4442601a1f144974df4080`, доступен обычный fast-forward.
+Отправляется только main; принятые labN и исторические refs не отправляются.

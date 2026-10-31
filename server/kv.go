@@ -21,18 +21,13 @@ type appliedResult struct {
 
 func (a *API) kvRequest(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
-	if key == "" || len(key) > 1024 || !utf8.ValidString(key) {
-		problem(w, 400, "key must be valid UTF-8, 1..1024 bytes")
+	if !validateKVKey(w, key) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	// Tokens are opaque to HTTP; ownership/staleness is decided during apply.
-	// Reject ambiguous headers and bound tokens even on the read path.
-	tokens := r.Header.Values("X-Lock-Token")
-	token := r.Header.Get("X-Lock-Token")
-	if len(tokens) > 1 || len(token) > 1024 || !utf8.ValidString(token) || strings.ContainsAny(token, ",\r\n") {
-		problem(w, 400, "expected one lock token, at most 1024 UTF-8 bytes")
+	token, ok := kvLockToken(w, r.Header)
+	if !ok {
 		return
 	}
 	if r.Method == "GET" || r.Method == "HEAD" {

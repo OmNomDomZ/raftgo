@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"unicode/utf8"
 )
 
 // kvUI forwards CRUD/CAS/locks only to fixed members. Public redirects are matched exactly
@@ -20,8 +19,7 @@ func (a *API) kvUI(mux *http.ServeMux) {
 				return
 			}
 			key := r.URL.Query().Get("key")
-			if key == "" || len(key) > 1024 || !utf8.ValidString(key) {
-				problem(w, 400, "key must be valid UTF-8, 1..1024 bytes")
+			if !validateKVKey(w, key) {
 				return
 			}
 			// Escape dot-only keys too: ServeMux canonicalizes literal dot segments.
@@ -35,9 +33,8 @@ func (a *API) kvUI(mux *http.ServeMux) {
 			} else if strings.HasSuffix(r.Pattern, "/lock") {
 				path += "/lock"
 			}
-			token := r.Header.Get("X-Lock-Token")
-			if len(r.Header.Values("X-Lock-Token")) > 1 || len(token) > 1024 || !utf8.ValidString(token) || strings.ContainsAny(token, ",\r\n") {
-				problem(w, 400, "expected one lock token, at most 1024 UTF-8 bytes")
+			token, ok := kvLockToken(w, r.Header)
+			if !ok {
 				return
 			}
 			target := ""
