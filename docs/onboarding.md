@@ -32,6 +32,7 @@
 | [server/http.go](../server/http.go) | `Handler`: публичные маршруты; `RPCHandler`: внутренние RPC; `Consume`: применение; `failure`: редиректы и ошибки |
 | [server/kv.go](../server/kv.go) | `kvRequest`, `waitApplied`: преобразование HTTP в команду и ожидание результата |
 | [kv/store.go](../kv/store.go) | `Command`, `Result`, `Store.Apply`, `Get`, `access`: детерминированные CRUD/CAS/lock |
+| [raft/config.go](../raft/config.go) | `Config`, значения по умолчанию и проверка параметров Raft; состояние узла и `New` остаются в [raft/raft.go](../raft/raft.go) |
 | [raft/](../raft/) | Выборы, репликация, коммит и ReadIndex; подробная [карта файлов](../README.md#карта-кода) |
 | [transport/http.go](../transport/http.go) | `HTTP.call`: исходящие JSON RPC с контекстом отмены |
 | [storage/memory.go](../storage/memory.go) | `Memory`, `StoreLog`: атомарное хранение term/голоса/лога, mutex и глубокие копии |

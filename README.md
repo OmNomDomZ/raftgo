@@ -212,7 +212,8 @@ Term включён в сообщения. Увидев больший term в �
 | [`transport.go`](raft/transport.go) | Два RPC, их поля, контракты отправки и приёма |
 | [`storage.go`](raft/storage.go) | Что сохраняется в Storage; `persistLocked`, `syncLocked` |
 | [`clock.go`](raft/clock.go) | Заменяемые часы и таймеры |
-| [`raft.go`](raft/raft.go) | `Config`, поля узла, `New`, переходы ролей и CheckQuorum |
+| [`config.go`](raft/config.go) | `Config`, значения по умолчанию и проверка параметров узла |
+| [`raft.go`](raft/raft.go) | Поля узла, `New`, переходы ролей и CheckQuorum |
 | [`run.go`](raft/run.go) | Главный цикл, запуск фоновых работников и остановка |
 | [`election.go`](raft/election.go) | Начало выборов, отправка запросов голосов, обработка ответов |
 | [`handlers.go`](raft/handlers.go) | Приём голосования и репликации на другой стороне RPC |

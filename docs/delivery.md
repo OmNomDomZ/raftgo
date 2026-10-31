@@ -2618,3 +2618,65 @@ HTTP-входов из карточки. Приёмка этапа и перес
 Перед push выполнен fetch origin/main: удалённый SHA совпадал с исходной базой
 `35a6e53c50f73ec8dd4442601a1f144974df4080`, доступен обычный fast-forward.
 Отправляется только main; принятые labN и исторические refs не отправляются.
+
+
+## R4 — Отделить конфигурацию Raft от состояния узла (2026-10-31)
+
+Ветка `main`, база `76002f5c82a817b1d1a84db8ac0ad47313d298c7`.
+Checkout перед работой чистый, зависимость S4-DEMO готова. Статус «В работе»
+записан коммитом `4b3d932`. Пользователь поручил выбрать карточку, выполнить
+её и запушить изменения; другие карточки и агенты не запускались.
+
+Изменены `raft/raft.go`, добавлен `raft/config.go`, обновлены `README.md`,
+`docs/onboarding.md`, `Kanban.md`, `docs/tasks.md` и этот журнал.
+Config, default-константы, validateAndSetDefaults и duplicates механически
+перенесены в config.go того же пакета. В raft.go остаются Role, peer, Raft,
+New, переходы ролей и управление RPC. Карты кода указывают новый путь.
+Python-проверка сравнила перенесённый блок с базой побайтово и подтвердила,
+что остальной raft.go отличается только удалением этого блока и его импортов.
+Публичные сигнатуры, порядок ошибок, defaults, Clock/Rand, electionTimeout,
+OnFatal, копирование Peers и все возможности полного main сохранены.
+Новые тесты ради переноса не добавлялись согласно карточке.
+
+Go `go1.27.3-X:nodwarf5 linux/amd64`, go.mod 1.27.1 сохранён.
+`.golangci.yml` отсутствует. Фактические проверки, все exit=0:
+
+```text
+$ go build ./...
+(без вывода)
+$ go test -count=1 ./...
+ok  raftgo/client  0.260s
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv      0.002s
+ok  raftgo/raft    0.994s
+ok  raftgo/server  6.788s
+ok  raftgo/storage 0.003s
+?   raftgo/transport [no test files]
+$ go test -race -count=1 ./...
+ok  raftgo/client  1.299s
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv      1.007s
+ok  raftgo/raft    6.419s
+ok  raftgo/server  8.232s
+ok  raftgo/storage 1.014s
+?   raftgo/transport [no test files]
+$ go vet ./...
+(без вывода)
+$ gofmt -l .
+(пусто)
+$ git diff --check
+(без вывода)
+$ go test ./raft -run '^(TestNew_.*|TestDefaultOnFatal_ReportsAndExits)$' -count=1
+ok  raftgo/raft 0.005s
+```
+
+Полный raft-набор сохраняет проверки Election Safety, Log Matching,
+Leader Completeness и State Machine Safety на fake-транспорте и виртуальном
+времени. Ограничений выполнения карточки нет. Docker и ручной UI не запускались:
+R4 — механический перенос конфигурации без изменения API/UI, приёмка этапа
+и пересдача снимков не поручены. Принятые lab1–lab4 сверены и сохранены на SHA
+из реестра приёмки. Следующего доступного ID нет: очередь канбана исчерпана.
+
+Перед push выполнен fetch origin/main: удалённый SHA совпал с исходной базой
+`76002f5c82a817b1d1a84db8ac0ad47313d298c7`, доступен обычный fast-forward.
+Отправляется только main; принятые labN и исторические refs не отправляются.
