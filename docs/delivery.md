@@ -2014,3 +2014,83 @@ ok  raftgo/server 18.430s
 
 Exit=0. После обновления журнала и канбана `git diff --check` и `gofmt -l .`
 повторены успешно, вывод пуст. S4-API переведена в «Готово».
+
+## S4-CLIENT — Клиентский Go API (2026-10-31)
+
+Ветка `main`, база `6907d182f4305b4dd9837bcb2c9db4e0c62ac76b`.
+Начальный checkout чистый, S4-API готова. Работа выполнена в существующем
+checkout без переключения, новых веток, worktree, копий, агентов или push.
+Снимки lab1–lab4, контроллер и его состояние не менялись.
+
+Изменённые файлы и поведение:
+
+- `client/client.go`: HTTP-only API Create/Get/Put/Delete/CAS/Lock/Unlock,
+  context, копия настраиваемого http.Client, общий Timeout на все переходы.
+  Только ограниченные 307 сохраняют метод, тело и явный X-Lock-Token;
+  циклы/лимит отклоняются, остальные 3xx не выполняются. Тела не получают
+  GetBody/idempotency headers; изменяющие запросы не повторяются после ошибки.
+  Ключи кодируются одним сегментом, включая slash, Unicode, percent и dot-only.
+  HTTPError сохраняет статус, результат и index/term; errors.Is различает
+  404/409/423/503. UnknownOutcomeError для 504/сетевых ошибок записи и потери
+  успешного ответа сохраняет исходную причину, включая context cancellation.
+- `client/client_test.go`: httptest всех семи методов через follower 307,
+  метод/тело/токен, escaping, лимит и цикл, отсутствие переходов по другим 3xx,
+  статусы, отмена и http.Client.Timeout для GET и записи, разрыв соединения
+  после чтения тела для всех шести изменяющих операций без повтора команды.
+- `client/integration_test.go`: настоящий Raft с Memory и API на httptest,
+  два клиента конкурируют за CAS и lock: один успех, один 409/423, по одной
+  записи на запрос. Проверены доступ владельца, отсутствие доступа у конкурента,
+  Create/Get/Put/Delete/CAS/Unlock, lock независимо от значения и старый токен.
+  API сначала применяет CAS, затем соединение закрывается без ответа:
+  клиент получает неизвестный исход, лог вырастает ровно на одну запись,
+  другой клиент читает применённое значение.
+- `client/example_test.go`: компилируемый пример двух клиентов, явный токен,
+  отказ конкурента, CAS и явный Unlock; на неизвестном исходе нет повтора.
+- `client/README.md`, `README.md`: сигнатуры, настройки, ошибки и пример,
+  отсутствие exactly-once/дедупликации, ABA, потеря токена, отсутствие TTL,
+  границы fencing в одной жизни кластера. Без CLI и внешних зависимостей.
+- `Kanban.md`: S4-CLIENT переведена в «Готово» после успешных проверок.
+
+Go `go1.27.3-X:nodwarf5 linux/amd64`, go.mod 1.27.1 не менялся;
+`.golangci.yml` отсутствует. Фактические обязательные проверки, все exit=0:
+
+```text
+$ go build ./...
+(без вывода)
+$ go test -count=1 ./...
+ok  raftgo/client   0.263s
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv       0.003s
+ok  raftgo/raft     1.097s
+ok  raftgo/server   6.629s
+ok  raftgo/storage  0.003s
+?   raftgo/transport [no test files]
+$ go test -race -count=1 ./...
+ok  raftgo/client   1.304s
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv       1.013s
+ok  raftgo/raft     6.309s
+ok  raftgo/server   8.426s
+ok  raftgo/storage  1.015s
+?   raftgo/transport [no test files]
+$ go vet ./...
+(без вывода)
+$ gofmt -l .
+(пусто)
+$ git diff --check
+(без вывода)
+```
+
+Дополнительные проверки критериев карточки:
+
+```text
+$ go test ./client -count=1
+ok  raftgo/client 0.254s
+$ go test -race ./client -count=20
+ok  raftgo/client 6.376s
+```
+
+Оба exit=0. Реальные HTTP listeners и Memory Raft создаются самими тестами;
+пример без Output компилируется, но не обращается к внешнему кластеру.
+Docker и ручной UI относятся к S4-DEMO и здесь не требуются.
+Ограничений выполнения нет. Следующий доступный ID — S4-UI, не запускался.

@@ -4,7 +4,6 @@ kanban-plugin: board
 
 ## К выполнению
 
-- [ ] [[docs/tasks#S4-CLIENT — Клиентский Go API|S4-CLIENT — Клиентский Go API]]
 - [ ] [[docs/tasks#S4-UI — CAS и владение lock|S4-UI — CAS и владение lock]]
 - [ ] [[docs/tasks#S4-DEMO — Итоговая приёмка четырёх веток|S4-DEMO — Итоговая приёмка четырёх веток]]
 
@@ -26,9 +25,12 @@ kanban-plugin: board
 
 
 
+
 ## На проверке
 
 ## Готово
+
+- [x] [[docs/tasks#S4-CLIENT — Клиентский Go API|S4-CLIENT — Клиентский Go API]]
 
 - [x] [[docs/tasks#S4-API — HTTP CAS, lock и unlock|S4-API — HTTP CAS, lock и unlock]]
 
