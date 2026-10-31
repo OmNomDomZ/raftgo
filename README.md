@@ -4,7 +4,7 @@
 полный код на Memory Storage, инфраструктура и канбан. `lab1` принят на
 `a2f486172f435f2e469802935ecec43048abee69` (выборы и UI).
 `lab2` принят на `0006d8422076f19336ad9ab8cdb5a9431fc2d4c6`,
-`lab3` — на `d93c829d8de20cfccf92ee06cf0b577b66b46010`. `lab4` ожидает приёмки.
+`lab3` — на `d93c829d8de20cfccf92ee06cf0b577b66b46010`. `lab4` принята на `a4b1f2e8eebb39fe9e0cdff8b19e2dea094f30e1` (CAS, lock/unlock и Go-клиент).
 [Правила](AGENTS.md), [подготовка снимков](docs/delivery.md),
 [инструкция autokanban](tools/autokanban/README.md).
 

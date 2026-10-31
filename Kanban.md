@@ -8,7 +8,7 @@ kanban-plugin: board
 
 ## В работе
 
-- [ ] [[docs/tasks#S4-DEMO — Итоговая приёмка четырёх веток|S4-DEMO — Итоговая приёмка четырёх веток]]
+
 
 
 
@@ -31,6 +31,8 @@ kanban-plugin: board
 ## На проверке
 
 ## Готово
+
+- [x] [[docs/tasks#S4-DEMO — Итоговая приёмка четырёх веток|S4-DEMO — Итоговая приёмка четырёх веток]]
 
 - [x] [[docs/tasks#S4-UI — CAS и владение lock|S4-UI — CAS и владение lock]]
 

@@ -23,7 +23,7 @@ main: полный код + Memory + инфраструктура + канбан
 `lab1` принят в S1-DEMO на `a2f486172f435f2e469802935ecec43048abee69`.
 `lab2` принят в S2-DEMO на `0006d8422076f19336ad9ab8cdb5a9431fc2d4c6`.
 `lab3` принят в S3-DEMO на `d93c829d8de20cfccf92ee06cf0b577b66b46010`.
-`lab4` пока не принят; не создавать его заранее из полного main.
+`lab4` принят в S4-DEMO на `a4b1f2e8eebb39fe9e0cdff8b19e2dea094f30e1`.
 
 ## Задание агенту и очередь
 
@@ -110,7 +110,7 @@ docker compose -p raftgo-scenarios -f scenarios/compose.yaml down
 
 ## Реестр приёмки
 
-Этапы 1–3 приняты; lab4 заполняется после соответствующей DEMO.
+Все четыре этапа приняты; повторная проверка снимков записана в S4-DEMO ниже.
 
 | Результат | Принятый SHA | Go/race | Docker | UI | Статус |
 | --- | --- | --- | --- | --- | --- |
@@ -119,7 +119,7 @@ docker compose -p raftgo-scenarios -f scenarios/compose.yaml down
 | lab1 | `a2f486172f435f2e469802935ecec43048abee69` | build/test/race/vet/gofmt PASS | task1 и cleanup PASS | Firefox PASS | S1-DEMO готова |
 | lab2 | `0006d8422076f19336ad9ab8cdb5a9431fc2d4c6` | build/test/race/vet/gofmt PASS | task1–2, конфликт хвоста и cleanup PASS | Firefox PASS | S2-DEMO готова |
 | lab3 | `d93c829d8de20cfccf92ee06cf0b577b66b46010` | build/test/race/vet/gofmt PASS | task1–3 и cleanup PASS | Firefox PASS | S3-DEMO готова |
-| lab4 | — | — | — | — | Не начат |
+| lab4 | `a4b1f2e8eebb39fe9e0cdff8b19e2dea094f30e1` | build/test/race/vet/gofmt PASS | task1–4 и cleanup PASS | Firefox PASS | S4-DEMO готова |
 
 В строке результата записывать реальный SHA проверенного кода. При изменениях
 после приёмки проверки повторяются для нового SHA. Исправления разрабатывать в main; принятые снимки без поручения не перемещать.
@@ -2200,3 +2200,127 @@ Cleanup harness снял все паузы. Собственный стенд у
 Это проверка S4-UI; приёмка всех этапов/task1–4 остаётся отдельной S4-DEMO.
 Ограничений выполнения карточки нет. После записи результатов S4-UI переведена
 в «Готово»; финальные gofmt и git diff --check без вывода, exit=0.
+
+
+## S4-DEMO — Итоговая приёмка четырёх веток (2026-10-31)
+
+Рабочая ветка `main`, начальная база `95ddd3ba3ed836920ead8107e7d093e33cf2be88`.
+Checkout перед карточкой чистый; S4-CLIENT и S4-UI готовы. Статус «В работе»
+сохранён коммитом `e0960f9`. Источник снимка — main
+`e0960f9d695cd582fbe3947c30e1f1266394bf6f`. Кандидат `snapshot/lab4` и принятая `lab4` указывают на один SHA:
+`a4b1f2e8eebb39fe9e0cdff8b19e2dea094f30e1`.
+Работа выполнена в одном checkout без копий проекта, worktree или других агентов.
+Push ветки lab4 отдельно разрешён пользователем; main не отправляется.
+
+В lab4 сохранён полный код этапов 1–4: выборы, строковый лог, KV CRUD,
+CAS, lock/unlock, HTTP, Go-клиент и встроенный UI. Удалены `autokanban`,
+`tools/autokanban`, `Kanban.md`, `docs/tasks.md`, `docs/delivery.md`, старые
+отчёты `docs/demo2.md` и `docs/demo3.md`. AGENTS описывает снимок для сдачи;
+README, docs/api.md, docs/onboarding.md и scenarios/README.md очищены от
+старого процесса и ссылок на удалённые документы. Личные настройки в git-дерево
+не включены. main сохраняет контроллер, полный код, канбан и журнал.
+
+Проверены точные SHA, последовательно lab4 → lab1 → lab2 → lab3:
+
+| Ветка | Проверенный SHA | Go-набор | Docker all | Firefox/UI и границы |
+| --- | --- | --- | --- | --- |
+| lab4 | `a4b1f2e8eebb39fe9e0cdff8b19e2dea094f30e1` | PASS | PASS task1–4 | PASS CAS/lock, две вкладки, Go-клиент |
+| lab1 | `a2f486172f435f2e469802935ecec43048abee69` | PASS | PASS task1 | PASS выборы; нет лога/KV |
+| lab2 | `0006d8422076f19336ad9ab8cdb5a9431fc2d4c6` | PASS | PASS task1–2 | PASS строки/лог; нет KV |
+| lab3 | `d93c829d8de20cfccf92ee06cf0b577b66b46010` | PASS | PASS task1–3 | PASS CRUD; нет CAS/lock/клиента |
+
+На каждом SHA выполнены следующие команды, все exit=0:
+
+```sh
+go build ./...
+go test -count=1 ./...
+go test -race -count=1 ./...
+go vet ./...
+gofmt -l .  # пустой вывод
+```
+
+Go `go1.27.3-X:nodwarf5 linux/amd64`, go.mod 1.27.1 сохранён;
+`.golangci.yml` отсутствует. Фактический вывод пакета server в обычном/race
+прогоне соответственно:
+
+```text
+lab4: ok raftgo/server 6.599s / ok raftgo/server 8.133s
+lab1: ok raftgo/server 0.607s / ok raftgo/server 1.626s
+lab2: ok raftgo/server 6.335s / ok raftgo/server 7.582s
+lab3: ok raftgo/server 6.470s / ok raftgo/server 7.885s
+```
+
+Остальные пакеты также PASS либо [no test files]. В исходном main до выделения
+кандидата обязательный Go-набор также прошёл; финальный прогон main после
+обновления документации записан ниже.
+
+Docker server 29.9.2. Каждый снимок собирался через
+`docker compose -p raftgo-scenarios -f scenarios/compose.yaml up -d --build`,
+затем `python3 scenarios/run.py all`. Runner печатал только доступные task1..N,
+все PASS, exit=0. Перед каждым переключением все паузы сняты, весь собственный
+стенд удалён через down, exit=0. Существующий проект `rafting` не менялся.
+Проверены пять участников, Memory Storage, отсутствие файлового backend и
+будущих исходников/маршрутов/сценариев; в Compose только read-only bind конфигов,
+без data volumes. Для ранних этапов отсутствующие маршруты возвращают 404,
+в lab1 нет entries/commit_index, с lab2 status содержит entries/consistency=local.
+Принятые lab1–lab3 не перемещались и не изменялись.
+
+Firefox 158.0.1 через Marionette: реальный браузер с кликами/вводом форм,
+визуально просмотрены скриншоты каждого этапа. Проверены пять карточек, номер
+этапа, пауза лидера/устаревание, same-origin ресурсы и ширина 390 px.
+В lab2 — пустая строка, повтор Unicode/HTML-строки как текста, commit/apply и лог.
+В lab3 — CRUD, 404/409, пустые/Unicode/HTML значения, экранированные и dot-ключи,
+строковый add, чтение после failover, 504 без повтора и восстановление кворума.
+В lab4 — две вкладки CAS 200/409, lock 201/423, явные/чужие/старые токены,
+lock отсутствующего ключа, CRUD/CAS под lock и после смены лидера, unlock,
+неизвестный исход CAS/lock/unlock 504 с ровно одним запросом, сохранение токена
+после неизвестного unlock, потеря токена при reload без автоматического unlock.
+Отдельный Go-прогон на Docker использовал два клиента через разные узлы:
+ровно один победитель CAS, отказ конкурента под lock, доступ владельца с токеном,
+чтение/удаление, unlock и stale-token конфликт через настоящие 307.
+
+Артефакты текущей проверки (локальные, не часть снимков):
+`/tmp/raftgo-s4-demo-{build,scenarios,browser,down}.log`,
+`/tmp/raftgo-final-lab{1,2,3}-{build,scenarios,browser,down}.log`,
+`/tmp/raftgo-final-browser.py`, `/tmp/raftgo-final-audit.py`,
+`/tmp/raftgo-s4-demo-client.go`, `/tmp/raftgo-s4-demo-browser.py`.
+Скриншоты: `/tmp/raftgo-final-lab{1,2}.png`,
+`/tmp/raftgo-s3-demo-ui-{normal,failover,no-quorum,mobile}.png`,
+`/tmp/raftgo-s4-demo-{owner,unknown,mobile}.png`.
+Первый запуск общего UI harness на lab1 выявил отсутствие helper follower
+в старом runner; исправлен только внешний harness, повтор exit=0.
+При завершении Firefox mozprofile печатает предупреждение деструктора
+`sys.meta_path is None`; браузеры явно закрыты, успешные harness exit=0.
+Это предупреждение не является ошибкой продукта или незавершённой проверкой.
+
+S4-DEMO готова. Ограничений выполнения нет; очередь канбана исчерпана,
+следующего доступного ID нет. Временная snapshot/lab4 сохранена для аудита.
+
+Финальная проверка main после записи отчёта, все команды exit=0:
+
+```text
+$ go build ./...
+(без вывода)
+$ go test -count=1 ./...
+ok  raftgo/client  0.264s
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv      0.003s
+ok  raftgo/raft    1.027s
+ok  raftgo/server  6.786s
+ok  raftgo/storage 0.003s
+?   raftgo/transport [no test files]
+$ go test -race -count=1 ./...
+ok  raftgo/client  1.296s
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv      1.007s
+ok  raftgo/raft    6.633s
+ok  raftgo/server  8.339s
+ok  raftgo/storage 1.017s
+?   raftgo/transport [no test files]
+$ go vet ./...
+(без вывода)
+$ gofmt -l .
+(пусто)
+$ git diff --check
+(без вывода)
+```
