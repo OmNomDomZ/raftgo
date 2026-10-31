@@ -1422,3 +1422,79 @@ exit=0 (вывод пуст)
 $ git diff --check
 exit=0 (вывод пуст)
 ```
+
+## S3-CORE — KV CRUD и безопасные чтения (2026-10-31)
+
+Ветка `main`, база `5512ac12008bdba454f772ac0ae650a9478d3286`, checkout
+`/home/bogdan/rafting` перед началом чистый. Зависимость S2-DEMO готова.
+Проверена существующая реализация: `kv.Store` детерминированно применяет
+string-string CRUD, consumer меняет KV только по ApplyCh, GET подтверждает
+ReadIndex и ждёт применения барьера. Рабочий код исправлений не потребовал;
+CAS/lock и их тесты полной реализации main сохранены.
+
+Изменены `server/kv_safety_test.go`, `Kanban.md`, `docs/delivery.md`.
+Добавлены проверки с fake-транспортом и виртуальным временем synctest:
+
+- Реальный Raft-applier коммитит PUT, но consumer задержан: GET не отвечает
+  до применения и затем возвращает подтверждённое значение.
+- Изолированный лидер с уже существующим значением не отвечает успешным GET.
+  Проверены отмена ожидающего чтения, старший term и отсутствие кворума
+  до таймаута запроса. При старшем term ожидающий ReadIndex отказывается
+  с 503: уведомление об утрате лидерства предшествует установке нового hint.
+- 24 конкурентных клиента выполняют PUT/GET своих ключей: чтение каждого
+  клиента обязано видеть его завершённую запись при конкурирующих операциях.
+- Два последовательных экземпляра Raft используют один объект Memory Storage
+  и новые KV/consumer. До подтверждения commit index replay отсутствует;
+  после AppendEntries применяются только шесть подтверждённых записей,
+  седьмая сохранённая запись не меняет KV. Совпадают все результаты replay:
+  create пустой строки, конфликт create, Unicode put, delete, отсутствующий
+  delete и upsert JSON-подобной строки.
+- `/entries` отвергает внутренний префикс, включая JSON Unicode-экранирование,
+  без добавления в лог. Обычная JSON-подобная строка реплицируется как непрозрачная
+  команда и не меняет KV.
+
+Существующие `raft/read_test.go` дополнительно проверяют ответы на запросы,
+отправленные до ReadIndex, commit собственного term, барьер no-op нового
+лидера, смену лидера, потерю кворума, отмену и изоляцию прежнего лидера после
+записи большинства. Полный набор сохраняет State Machine Safety, Election
+Safety, Log Matching, Leader Completeness и HTTP-проверки failover/no-quorum
+полной реализации. Проверки S3-API/UI и подготовка lab3 остаются своими карточками.
+
+Фактические результаты на итоговом тестовом коде:
+
+```text
+$ go build ./...
+exit=0 (вывод пуст)
+$ go test -count=1 ./...
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv        0.004s
+ok  raftgo/raft      1.151s
+ok  raftgo/server    6.461s
+ok  raftgo/storage   0.002s
+?   raftgo/transport [no test files]
+exit=0
+$ go test -race -count=1 ./...
+?   raftgo/cmd/raftgo [no test files]
+ok  raftgo/kv        1.009s
+ok  raftgo/raft      8.503s
+ok  raftgo/server    7.578s
+ok  raftgo/storage   1.018s
+?   raftgo/transport [no test files]
+exit=0
+$ go vet ./...
+exit=0 (вывод пуст; .golangci.yml отсутствует)
+$ gofmt -l .
+exit=0 (вывод пуст)
+$ go test -race -count=20 ./server -run '^TestKV'
+ok  raftgo/server 3.680s
+exit=0
+$ go test -race -count=20 ./raft -run 'ReadIndex|CutOffLeaderCannotServeReads'
+ok  raftgo/raft 1.812s
+exit=0
+$ git diff --check
+exit=0 (вывод пуст)
+```
+
+S3-CORE готова. Ограничений нет. Ветки и снимки lab1–lab4 не менялись,
+контроллер, другие карточки и агенты не запускались, push не выполнялся.
+Следующий доступный ID — S3-API.
