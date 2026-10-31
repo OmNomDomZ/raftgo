@@ -1,13 +1,10 @@
 package server
 
 import (
-	"bytes"
-	"context"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 	"unicode/utf8"
 )
 
@@ -15,10 +12,7 @@ import (
 // and mapped to internal endpoints; credentials and arbitrary paths never pass.
 func (a *API) kvUI(mux *http.ServeMux) {
 	members := append([]Member(nil), a.Members...)
-	client := &http.Client{
-		Transport:     &http.Transport{MaxIdleConnsPerHost: 2, IdleConnTimeout: 30 * time.Second},
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}
+	client := newUIForwardClient()
 	for _, route := range []string{"GET /cluster/kv/{id}", "POST /cluster/kv/{id}", "PUT /cluster/kv/{id}", "DELETE /cluster/kv/{id}", "POST /cluster/kv/{id}/cas", "POST /cluster/kv/{id}/lock", "DELETE /cluster/kv/{id}/lock"} {
 		mux.HandleFunc(route, func(w http.ResponseWriter, r *http.Request) {
 			if r.Method == "HEAD" {
@@ -67,53 +61,17 @@ func (a *API) kvUI(mux *http.ServeMux) {
 					return
 				}
 			}
-			ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
-			defer cancel()
-			w.Header().Set("Cache-Control", "no-store")
-			visited := make(map[string]bool)
-			for !visited[target] {
-				visited[target] = true
-				req, err := http.NewRequestWithContext(ctx, r.Method, target, bytes.NewReader(raw))
-				if err != nil {
-					problem(w, 503, "invalid configured endpoint")
-					return
-				}
-				// Prevent transport replay even though the body is buffered for 307.
-				req.GetBody = nil
-				req.Header.Set("Content-Type", "application/json")
-				if token != "" {
-					req.Header.Set("X-Lock-Token", token)
-				}
-				resp, err := client.Do(req)
-				if err != nil {
-					problem(w, 504, "response unavailable; outcome unknown for writes; request was not retried")
-					return
-				}
-				if resp.StatusCode != 307 {
-					data, err := io.ReadAll(io.LimitReader(resp.Body, 6*MaxCommandBytes+1024))
-					resp.Body.Close()
-					if err != nil {
-						problem(w, 504, "response lost; outcome unknown for writes; request was not retried")
-						return
-					}
-					w.Header().Set("Content-Type", "application/json")
-					if retry := resp.Header.Get("Retry-After"); retry != "" {
-						w.Header().Set("Retry-After", retry)
-					}
-					w.WriteHeader(resp.StatusCode)
-					_, _ = w.Write(data)
-					return
-				}
-				location := resp.Header.Get("Location")
-				resp.Body.Close()
-				next, ok := redirects[location]
-				if !ok {
-					problem(w, 503, "leader is not a configured member")
-					return
-				}
-				target = next
+			headers := http.Header{"Content-Type": {"application/json"}}
+			if token != "" {
+				headers.Set("X-Lock-Token", token)
 			}
-			problem(w, 503, "leader redirect cycle")
+			forwardUI(w, r, client, uiForwardRequest{
+				method: r.Method, target: target, body: raw, headers: headers,
+				redirects: redirects, responseLimit: 6*MaxCommandBytes + 1024,
+				retryAfter:   true,
+				unavailable:  "response unavailable; outcome unknown for writes; request was not retried",
+				responseLost: "response lost; outcome unknown for writes; request was not retried",
+			})
 		})
 	}
 }
