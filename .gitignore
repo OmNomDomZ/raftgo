@@ -33,3 +33,6 @@ coverage.html
 
 # Personal Obsidian vault settings and installed plugins
 .obsidian/
+
+# Python bytecode
+__pycache__/

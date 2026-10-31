@@ -128,7 +128,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("GET /election", status)
 	mux.HandleFunc("GET /log", status)
 	mux.HandleFunc("POST /entries", a.appendEntry)
-	for _, pattern := range []string{"GET /kv/{key}", "POST /kv/{key}", "PUT /kv/{key}", "DELETE /kv/{key}", "POST /kv/{key}/cas", "POST /kv/{key}/lock", "DELETE /kv/{key}/lock"} {
+	for _, pattern := range []string{"GET /kv/{key}", "POST /kv/{key}", "PUT /kv/{key}", "DELETE /kv/{key}"} {
 		mux.HandleFunc(pattern, a.kvRequest)
 	}
 	return a.trace(mux)

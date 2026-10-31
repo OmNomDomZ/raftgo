@@ -130,13 +130,12 @@ func TestHTTPClusterCommitRedirectFailover(t *testing.T) {
 		return true
 	})
 
-	kvCall := func(i int, method, path, body, token string, want int) map[string]any {
+	kvCall := func(i int, method, path, body string, want int) map[string]any {
 		t.Helper()
 		req, err := http.NewRequest(method, members[i].APIURL+path, bytes.NewBufferString(body))
 		if err != nil {
 			t.Fatal(err)
 		}
-		req.Header.Set("X-Lock-Token", token)
 		resp, err := client.Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -151,32 +150,11 @@ func TestHTTPClusterCommitRedirectFailover(t *testing.T) {
 		}
 		return result
 	}
-	kvCall(follower, "PUT", "/kv/x", `{"value":"a"}`, "", 307)
-	kvCall(leader, "POST", "/kv/x", `{"value":"a"}`, "", 201)
-	kvCall(leader, "POST", "/kv/x/cas", `{"expected":"wrong","value":"bad"}`, "", 409)
-	// Concurrent CAS operations share one expected value: only one may succeed.
-	codes := make(chan int, 2)
-	for _, value := range []string{"b", "c"} {
-		go func(value string) {
-			resp, err := client.Post(members[leader].APIURL+"/kv/x/cas", "application/json", bytes.NewBufferString(fmt.Sprintf(`{"expected":"a","value":%q}`, value)))
-			if err != nil {
-				codes <- 0
-				return
-			}
-			resp.Body.Close()
-			codes <- resp.StatusCode
-		}(value)
-	}
-	first, second := <-codes, <-codes
-	if !((first == 200 && second == 409) || (first == 409 && second == 200)) {
-		t.Fatalf("CAS race: %d %d", first, second)
-	}
-	lock := kvCall(leader, "POST", "/kv/x/lock", "", "", 201)
-	token := lock["token"].(string)
-	kvCall(leader, "PUT", "/kv/x", `{"value":"bad"}`, "", 423)
-	kvCall(leader, "PUT", "/kv/x", `{"value":"protected"}`, token, 200)
-	kvCall(leader, "GET", "/kv/x", "", "", 423)
-	if got := kvCall(leader, "GET", "/kv/x", "", token, 200); got["value"] != "protected" {
+	kvCall(follower, "PUT", "/kv/x", `{"value":"a"}`, 307)
+	kvCall(leader, "POST", "/kv/x", `{"value":"a"}`, 201)
+	kvCall(leader, "POST", "/kv/x", `{"value":"bad"}`, 409)
+	kvCall(leader, "PUT", "/kv/x", `{"value":"confirmed"}`, 200)
+	if got := kvCall(leader, "GET", "/kv/x", "", 200); got["value"] != "confirmed" {
 		t.Fatal(got)
 	}
 	cancels[leader]()
@@ -197,19 +175,11 @@ func TestHTTPClusterCommitRedirectFailover(t *testing.T) {
 	if resp.StatusCode != 201 {
 		t.Fatalf("failover append: %d", resp.StatusCode)
 	}
-	kvCall(leader, "PUT", "/kv/x", `{"value":"bad"}`, "", 423)
-	if got := kvCall(leader, "GET", "/kv/x", "", token, 200); got["value"] != "protected" {
+	if got := kvCall(leader, "GET", "/kv/x", "", 200); got["value"] != "confirmed" {
 		t.Fatal(got)
 	}
-	kvCall(leader, "DELETE", "/kv/x/lock", "", token, 200)
-	nextLock := kvCall(leader, "POST", "/kv/x/lock", "", "", 201)["token"].(string)
-	if token == nextLock {
-		t.Fatal("lock token reused after failover")
-	}
-	kvCall(leader, "DELETE", "/kv/x/lock", "", token, 423)
-	kvCall(leader, "DELETE", "/kv/x/lock", "", nextLock, 200)
-	kvCall(leader, "DELETE", "/kv/x", "", "", 200)
-	kvCall(leader, "GET", "/kv/x", "", "", 404)
+	kvCall(leader, "DELETE", "/kv/x", "", 200)
+	kvCall(leader, "GET", "/kv/x", "", 404)
 	// With only two of five nodes alive, no write may be reported committed.
 	alive := 0
 	for i := range count {

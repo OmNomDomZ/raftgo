@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -43,7 +42,6 @@ func (a *API) kvRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	token := r.Header.Get("X-Lock-Token")
 	if r.Method == "GET" || r.Method == "HEAD" {
 		index, err := a.Node.ReadIndex(ctx)
 		if err != nil {
@@ -55,21 +53,13 @@ func (a *API) kvRequest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.mu.Lock()
-		result := a.store.Get(key, token)
+		result := a.store.Get(key)
 		a.mu.Unlock()
 		writeJSON(w, result.Code, result)
 		return
 	}
-	c := kv.Command{Key: key, Token: token}
+	c := kv.Command{Key: key}
 	switch {
-	case strings.HasSuffix(r.Pattern, "/cas"):
-		c.Op = "cas"
-	case strings.HasSuffix(r.Pattern, "/lock"):
-		if r.Method == "POST" {
-			c.Op = "lock"
-		} else {
-			c.Op = "unlock"
-		}
 	case r.Method == "POST":
 		c.Op = "create"
 	case r.Method == "PUT":
@@ -77,13 +67,12 @@ func (a *API) kvRequest(w http.ResponseWriter, r *http.Request) {
 	case r.Method == "DELETE":
 		c.Op = "delete"
 	}
-	if c.Op == "create" || c.Op == "put" || c.Op == "cas" {
-		fields, ok := decodeKVBody(w, r, c.Op == "cas")
+	if c.Op == "create" || c.Op == "put" {
+		fields, ok := decodeKVBody(w, r)
 		if !ok {
 			return
 		}
 		c.Value = fields["value"]
-		c.Expected = fields["expected"]
 	}
 	data, err := json.Marshal(c)
 	if err != nil || len(data)+len(kv.Prefix) > MaxCommandBytes {
@@ -111,7 +100,7 @@ func (a *API) kvRequest(w http.ResponseWriter, r *http.Request) {
 }
 
 // Decode exact field names and reject duplicates so a request has one meaning.
-func decodeKVBody(w http.ResponseWriter, r *http.Request, cas bool) (map[string]string, bool) {
+func decodeKVBody(w http.ResponseWriter, r *http.Request) (map[string]string, bool) {
 	const limit = 6*MaxCommandBytes + 128
 	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
 	if err != nil || !utf8.Valid(raw) {
@@ -129,7 +118,7 @@ func decodeKVBody(w http.ResponseWriter, r *http.Request, cas bool) (map[string]
 		token, err := d.Token()
 		name, ok := token.(string)
 		_, duplicate := fields[name]
-		if err != nil || !ok || duplicate || (name != "value" && !(cas && name == "expected")) {
+		if err != nil || !ok || duplicate || name != "value" {
 			problem(w, 400, "unknown or duplicate JSON field")
 			return nil, false
 		}
@@ -149,9 +138,8 @@ func decodeKVBody(w http.ResponseWriter, r *http.Request, cas bool) (map[string]
 		return nil, false
 	}
 	_, valueOK := fields["value"]
-	_, expectedOK := fields["expected"]
-	if !valueOK || (cas && !expectedOK) {
-		problem(w, 400, "value and (for CAS) expected are required strings")
+	if !valueOK {
+		problem(w, 400, "value is a required string")
 		return nil, false
 	}
 	return fields, true

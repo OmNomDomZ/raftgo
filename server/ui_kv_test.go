@@ -17,7 +17,7 @@ func TestKVUIForwarding(t *testing.T) {
 	value := strings.Repeat("<", 20000)
 	leader := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
-		if r.URL.EscapedPath() != "/kv/a%2Fb%25%3F" || r.URL.RawQuery != "" || r.Header.Get("Cookie") != "" || r.Header.Get("X-Lock-Token") != "" {
+		if r.URL.EscapedPath() != "/kv/a%2Fb%25%3F" || r.URL.RawQuery != "" || r.Header.Get("Cookie") != "" {
 			t.Errorf("unexpected request %s %v", r.URL, r.Header)
 		}
 		raw, _ := io.ReadAll(r.Body)
@@ -48,7 +48,6 @@ func TestKVUIForwarding(t *testing.T) {
 		w := httptest.NewRecorder()
 		r := httptest.NewRequest(method, path, strings.NewReader(`{"value":"<b>"}`))
 		r.Header.Set("Cookie", "secret=yes")
-		r.Header.Set("X-Lock-Token", "secret")
 		h.ServeHTTP(w, r)
 		return w
 	}
@@ -76,7 +75,7 @@ func TestKVUIForwarding(t *testing.T) {
 	if w := request("PUT", "/cluster/kv/unknown?key=key"); w.Code != 404 {
 		t.Fatal(w.Code)
 	}
-	if w := request("POST", "/cluster/kv/leader/key/cas"); w.Code != 404 {
+	if w := request("POST", "/cluster/kv/leader/key/extra"); w.Code != 404 {
 		t.Fatal("proxy exposes arbitrary paths", w.Code)
 	}
 }

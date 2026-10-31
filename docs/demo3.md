@@ -17,8 +17,7 @@ docker compose -p raftgo-scenarios -f scenarios/compose.yaml up -d --build
 python3 scenarios/run.py all
 ```
 
-В lab3 `all` выполняет только task1–3. В полном main запускайте отдельно
-`python3 scenarios/run.py 1`, затем `2`, затем `3`: main содержит также этап 4.
+В lab3 `all` выполняет только task1–3.
 Runner проверяет выборы, репликацию, замену неподтверждённого хвоста, CRUD,
 сохранение значения при смене лидера и pause/unpause всех пяти процессов,
 отказ GET/PUT без кворума. При ошибке печатает диагностику и восстанавливает

@@ -18,7 +18,7 @@ func TestConsumerReplayAndNoOpBarrier(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	commands := []kv.Command{{Op: "put", Key: "x", Value: "v"}, {Op: "lock", Key: "x"}, {Op: "put", Key: "x", Value: "bad"}}
+	commands := []kv.Command{{Op: "put", Key: "x", Value: "v"}, {Op: "create", Key: "x", Value: "bad"}, {Op: "put", Key: "x", Value: "updated"}}
 	for range 2 {
 		api := NewAPI(node, nil)
 		ch := make(chan raft.ApplyMsg, 5)
@@ -35,11 +35,8 @@ func TestConsumerReplayAndNoOpBarrier(t *testing.T) {
 			t.Fatal(err)
 		}
 		cancel()
-		if api.store.Get("x", "").Code != 423 || api.store.Get("x", "2").Value != "v" {
-			t.Fatal("replay lost lock or applied rejected write")
-		}
-		if api.results[3].result.Code != 423 {
-			t.Fatal("incorrect command result")
+		if api.store.Get("x").Value != "updated" || api.results[2].result.Code != 409 || api.results[3].result.Code != 200 {
+			t.Fatal("replay diverged or lost command results")
 		}
 	}
 }

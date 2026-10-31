@@ -171,7 +171,7 @@ func TestKVReplaySameStorageOnlyCommittedPrefix(t *testing.T) {
 			go func() { defer close(stopped); node.Run(ctx) }()
 			go api.Consume(ctx, ch)
 			synctest.Wait()
-			if api.applied != 0 || api.store.Get("x", "").Code != 404 {
+			if api.applied != 0 || api.store.Get("x").Code != 404 {
 				t.Fatal("replayed without commit evidence")
 			}
 			args := &raft.AppendEntriesArgs{Term: 1, LeaderID: "b", LeaderCommit: 6}
@@ -186,7 +186,7 @@ func TestKVReplaySameStorageOnlyCommittedPrefix(t *testing.T) {
 				t.Fatalf("append: %v %v", reply, err)
 			}
 			synctest.Wait()
-			if api.applied != 6 || api.store.Get("x", "").Value != commands[5].Value {
+			if api.applied != 6 || api.store.Get("x").Value != commands[5].Value {
 				t.Fatal("lost committed value or applied uncommitted suffix")
 			}
 			codes := []int{201, 409, 200, 200, 404, 200}

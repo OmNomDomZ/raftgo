@@ -67,10 +67,8 @@ def reconnect(node):
     print(f'  Network restored: {node}', flush=True)
 
 
-def request(node, method, path, data=None, token=None, expected=None, timeout=8):
+def request(node, method, path, data=None, expected=None, timeout=8):
     headers = {'Content-Type': 'application/json'}
-    if token is not None:
-        headers['X-Lock-Token'] = token
     req = urllib.request.Request(BASE[node] + path, method=method, headers=headers,
                                  data=None if data is None else json.dumps(data).encode())
     try:
@@ -266,7 +264,7 @@ def task2():
 
 
 def task3():
-    step('3.1 CRUD without locks, duplicate create and missing key')
+    step('3.1 CRUD, duplicate create and missing key')
     current = leader()
     path = '/kv/crud-' + uuid.uuid4().hex
     redirect(follower(current), 'POST', path, {'value': 'first'}, current)
@@ -306,58 +304,6 @@ def task3():
     leader()
 
 
-def task4():
-    step('4.1 CAS rejects wrong expected value without changing data')
-    current = leader()
-    path = '/kv/cas-' + uuid.uuid4().hex
-    request(current, 'POST', path, {'value': '0'}, expected=201)
-    request(current, 'POST', path + '/cas', {'expected': 'wrong', 'value': 'bad'}, expected=409)
-    check(request(current, 'GET', path, expected=200)[1]['value'] == '0', 'Failed CAS changed data')
-    step('4.2 Two concurrent CAS: exactly one winner')
-    def cas(value):
-        return value, request(current, 'POST', path + '/cas', {'expected': '0', 'value': value})[0]
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(pool.map(cas, ['A', 'B']))
-    check(sorted(code for _, code in results) == [200, 409], f'CAS results: {results}')
-    winner = next(value for value, code in results if code == 200)
-    check(request(current, 'GET', path, expected=200)[1]['value'] == winner, 'Wrong CAS winner')
-    print(f'  CAS clients: {results}')
-    step('4.3 Concurrent lock acquisition: exactly one token')
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(pool.map(lambda _: request(current, 'POST', path + '/lock'), range(2)))
-    check(sorted(r[0] for r in results) == [201, 423], f'Lock results: {results}')
-    token = next(r[1]['token'] for r in results if r[0] == 201)
-    for method, suffix, body in [('GET', '', None), ('PUT', '', {'value': 'bad'}),
-                                 ('DELETE', '', None), ('POST', '/cas', {'expected': winner, 'value': 'bad'}),
-                                 ('DELETE', '/lock', None)]:
-        request(current, method, path + suffix, body, expected=423)
-    request(current, 'PUT', path, {'value': 'protected'}, token=token, expected=200)
-    request(current, 'POST', path + '/cas', {'expected': 'protected', 'value': 'locked-cas'}, token=token, expected=200)
-    step('4.4 Lock survives leader failure and pause/unpause of all processes')
-    new = failover(current)
-    request(new, 'GET', path, expected=423)
-    check(request(new, 'GET', path, token=token, expected=200)[1]['value'] == 'locked-cas', 'Locked value lost')
-    compose('unpause', current)
-    leader()
-    compose('pause')
-    compose('unpause')
-    current = leader()
-    request(current, 'GET', path, expected=423)
-    request(current, 'GET', path, token=token, expected=200)
-    step('4.5 Release, reacquire, reject stale token; CRUD under lock')
-    request(current, 'DELETE', path + '/lock', token=token, expected=200)
-    request(current, 'PUT', path, {'value': 'stale'}, token=token, expected=409)
-    new_token = request(current, 'POST', path + '/lock', expected=201)[1]['token']
-    check(int(new_token) > int(token), 'Fence did not increase')
-    request(current, 'PUT', path, {'value': 'stale'}, token=token, expected=423)
-    request(current, 'DELETE', path + '/lock', token=token, expected=423)
-    request(current, 'DELETE', path, token=new_token, expected=200)
-    request(current, 'POST', path, {'value': 'without-token'}, expected=423)
-    request(current, 'POST', path, {'value': 'recreated'}, token=new_token, expected=201)
-    request(current, 'DELETE', path + '/lock', token=new_token, expected=200)
-    check(request(current, 'GET', path, expected=200)[1]['value'] == 'recreated', 'Final value wrong')
-
-
 def cleanup():
     errors = []
     for node in list(DISCONNECTED):
@@ -393,10 +339,10 @@ def diagnostics():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('task', choices=['1', '2', '3', '4', 'all'])
+    parser.add_argument('task', choices=['1', '2', '3', 'all'])
     args = parser.parse_args()
     try:
-        for number in ('1234' if args.task == 'all' else args.task):
+        for number in ('123' if args.task == 'all' else args.task):
             globals()['task' + number]()
             print(f'\nPASS task{number}', flush=True)
     except Exception:

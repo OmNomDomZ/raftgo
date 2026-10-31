@@ -62,7 +62,7 @@ func TestHTTPKVCRUDStringsAndEscapedKeys(t *testing.T) {
 					t.Fatal(got)
 				}
 				api.mu.Lock()
-				stored := api.store.Get(key, "")
+				stored := api.store.Get(key)
 				api.mu.Unlock()
 				if stored.Code != 200 || stored.Value != value {
 					t.Fatalf("escaped key changed: %q %+v", key, stored)
@@ -86,7 +86,7 @@ func TestHTTPKVStrictValidationAndSizes(t *testing.T) {
 		api, _, ctx := stringAPI(t, true)
 		h := api.Handler()
 		for _, method := range []string{"POST", "PUT"} {
-			for _, body := range []string{"", "{", "[]", "null", `{}`, `{"value":null}`, `{"value":1}`, `{"value":{}}`, `{"value":"x","extra":true}`, `{"value":"x","expected":"y"}`, `{"Value":"x"}`, `{"value":"a","value":"b"}`, `{"value":"x"} {}`, "{\"value\":\"\xff\"}", strings.Repeat(" ", 6*MaxCommandBytes+129)} {
+			for _, body := range []string{"", "{", "[]", "null", `{}`, `{"value":null}`, `{"value":1}`, `{"value":{}}`, `{"value":"x","extra":true}`, `{"Value":"x"}`, `{"value":"a","value":"b"}`, `{"value":"x"} {}`, "{\"value\":\"\xff\"}", strings.Repeat(" ", 6*MaxCommandBytes+129)} {
 				before := api.Node.Status().LastLogIndex
 				w := kvRequestAt(h, ctx, method, "/kv/x", body)
 				if w.Code != 400 || api.Node.Status().LastLogIndex != before {
@@ -180,7 +180,7 @@ func TestHTTPKVTimeoutDoesNotRetryAndCanApplyLater(t *testing.T) {
 			t.Fatal("retry or premature commit")
 		}
 		api.mu.Lock()
-		value := api.store.Get("x", "")
+		value := api.store.Get("x")
 		api.mu.Unlock()
 		if value.Code != 404 {
 			t.Fatal("uncommitted value applied")
