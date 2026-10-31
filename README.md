@@ -1,18 +1,8 @@
-# raftgo
+# raftgo — lab4
 
-Разработка ведётся последовательно в `main`, в этой же папке. Здесь находятся
-полный код на Memory Storage, инфраструктура и канбан. `lab1` принят на
-`a2f486172f435f2e469802935ecec43048abee69` (выборы и UI).
-`lab2` принят на `0006d8422076f19336ad9ab8cdb5a9431fc2d4c6`,
-`lab3` — на `d93c829d8de20cfccf92ee06cf0b577b66b46010`. `lab4` ожидает приёмки.
-[Правила](AGENTS.md), [подготовка снимков](docs/delivery.md),
-[инструкция autokanban](tools/autokanban/README.md).
-
-```sh
-./autokanban plan
-./autokanban run --max-tasks 2
-./autokanban status
-```
+Проверяемый снимок этапа 4 из main `e0960f9` (S4-DEMO).
+Выборы, строковый лог, KV CRUD, CAS, lock/unlock, Go-клиент и UI.
+Разработку продолжать в main; этот снимок не является рабочей веткой.
 
 Внешний dashboard: `python3 scenarios/dashboard.py` (Docker) или
 `python3 scenarios/dashboard.py --local`. Кнопки Pause/Resume сохраняют RAM;
@@ -38,7 +28,7 @@ CAS использует поля expected и «Значение» (new). Для
 Полный прототип содержит ядро протокола в [`raft/`](raft/), KV с CRUD, CAS
 и блокировками, HTTP API, транспорт и `storage.Memory`.
 [`cmd/raftgo/main.go`](cmd/raftgo/main.go) запускает узел с пустой памятью.
-План выделения четырёх этапов — в [канбане](Kanban.md); экран выборов встроен в бинарник.
+Контракт четырёх этапов — [docs/stages.md](docs/stages.md).
 
 Этот текст можно читать без знакомства со статьёй о Raft. Примеры `SET` и
 `INCR` ниже условные: Raft видит только байты. `/entries` добавляет строку,
