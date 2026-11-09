@@ -3,7 +3,7 @@
   "info": {
     "title": "Raftgo · этап 1",
     "version": "1.0.0",
-    "description": "Выборы, heartbeat и локальная диагностика пяти узлов. Начните с GET /cluster/status. Опросы реплик неатомарны; Leader не доказывает наличие кворума. Все состояния хранятся в RAM."
+    "description": "Выборы и heartbeat. GET /status показывает локальное состояние узла, на котором открыт Swagger. Для других узлов откройте /swagger/ на портах 18002–18005. Leader не доказывает наличие кворума. Все состояния хранятся в RAM."
   },
   "servers": [
     {
@@ -22,67 +22,15 @@
         "tags": [
           "Диагностика"
         ],
-        "summary": "Локальный статус и лог",
+        "summary": "Локальный статус узла",
         "description": "Локальное наблюдение может отставать. Опросы нескольких реплик не образуют атомарный снимок.",
         "responses": {
           "200": {
-            "description": "Локальный снимок (у /log нет members)",
+            "description": "Локальное состояние узла и фиксированный состав кластера",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Status"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/cluster/status": {
-      "get": {
-        "tags": [
-          "Диагностика"
-        ],
-        "summary": "Наблюдения пяти реплик",
-        "responses": {
-          "200": {
-            "description": "Независимые наблюдения; недоступные реплики помечены available=false",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "atomic": {
-                      "type": "boolean",
-                      "enum": [
-                        false
-                      ]
-                    },
-                    "members": {
-                      "type": "array",
-                      "items": {
-                        "type": "object",
-                        "properties": {
-                          "id": {
-                            "type": "string"
-                          },
-                          "available": {
-                            "type": "boolean"
-                          },
-                          "observed_at": {
-                            "type": "string",
-                            "format": "date-time"
-                          },
-                          "node": {
-                            "$ref": "#/components/schemas/ElectionNode"
-                          },
-                          "error": {
-                            "type": "string"
-                          }
-                        }
-                      }
-                    }
-                  }
                 }
               }
             }
@@ -140,41 +88,6 @@
             "items": {
               "$ref": "#/components/schemas/Member"
             }
-          }
-        }
-      },
-      "ElectionNode": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "role": {
-            "type": "string",
-            "enum": [
-              "Follower",
-              "Candidate",
-              "Leader"
-            ]
-          },
-          "term": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "leader_id": {
-            "type": "string"
-          },
-          "voted_for": {
-            "type": "string"
-          },
-          "votes": {
-            "type": "integer"
-          },
-          "quorum": {
-            "type": "integer"
-          },
-          "running": {
-            "type": "boolean"
           }
         }
       },

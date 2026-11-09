@@ -173,7 +173,7 @@ func TestHTTPElectionRouting(t *testing.T) {
 			}
 		}
 	}
-	for _, path := range []string{"/unknown", "/status/", "/status/child", "/election", "/election/", "/election/child"} {
+	for _, path := range []string{"/unknown", "/status/", "/status/child", "/election", "/election/", "/election/child", "/cluster/status", "/", "/ui/", "/ui/index.html", "/ui/election.js", "/ui/election.css"} {
 		for _, method := range []string{"GET", "POST"} {
 			w := httptest.NewRecorder()
 			h.ServeHTTP(w, httptest.NewRequest(method, path, nil))

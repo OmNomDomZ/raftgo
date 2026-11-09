@@ -1,7 +1,7 @@
 # raftgo — лабораторная 1
 
 Пять узлов Raft: выборы лидера, heartbeat, term и голоса, Memory Storage,
-HTTP-диагностика, встроенный UI и Swagger. Кворум фиксирован: три из пяти.
+HTTP-диагностика и Swagger. Кворум фиксирован: три из пяти.
 Пользовательского лога и операций следующих лабораторных в lab1 нет.
 
 ## Запуск
@@ -14,9 +14,10 @@ python3 scripts/demo.py
 
 Откроются пять окон Terminal с логами node1–node5.
 
-- UI: http://localhost:18001/
 - Swagger: http://localhost:18001/swagger/
-- Остальные узлы: порты 18002–18005.
+- Swagger остальных узлов: порты 18002–18005, путь `/swagger/`.
+- В Swagger доступен только `GET /status` открытого узла.
+- `/`, `/ui/...`, `/election` и `/cluster/status` удалены и возвращают 404.
 
 Один стенд описан в корневом `compose.yaml`, состав узлов — в
 `config/cluster.json`. Имя проекта `raftgo-scenarios` задано в Compose,
@@ -50,7 +51,7 @@ Down удаляет весь стенд и его состояние в RAM. С�
 
 - `cmd/raftgo/` — создание зависимостей и запуск узла.
 - `raft/` — ядро выборов и heartbeat.
-- `server/` — входящие HTTP/RPC, статус, UI и Swagger.
+- `server/` — входящие HTTP/RPC, локальный статус и Swagger.
 - `transport/` — исходящие RPC по HTTP.
 - `storage/` — состояние в памяти процесса.
 - `scripts/demo.py` — запуск и пять окон с логами.

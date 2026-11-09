@@ -58,7 +58,7 @@ def main():
     end tell
 end run'''
     subprocess.run(["osascript", "-e", terminal_script, *windows], check=True)
-    print("UI: http://localhost:18001/   Swagger: http://localhost:18001/swagger/")
+    print("Swagger: http://localhost:18001/swagger/")
     print("Закрытие окна останавливает только просмотр логов, узел продолжает работать.")
     print("Остановить весь стенд и удалить данные из RAM: " + shlex.join(compose + ["down"]))
 
