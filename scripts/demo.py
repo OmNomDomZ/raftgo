@@ -10,7 +10,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 def commands(root, project):
-    compose = ["docker", "compose", "-p", project, "-f", str(root / "scenarios/compose.yaml")]
+    compose = ["docker", "compose", "-p", project, "-f", str(root / "compose.yaml")]
     windows = []
     for number in range(1, 6):
         node = f"node{number}"
@@ -29,7 +29,7 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="показать команды без запуска")
     args = parser.parse_args()
     root = args.directory.resolve()
-    compose_file = root / "scenarios/compose.yaml"
+    compose_file = root / "compose.yaml"
     if not compose_file.is_file():
         parser.error(f"Файл не найден: {compose_file}")
     compose, windows = commands(root, args.project)
