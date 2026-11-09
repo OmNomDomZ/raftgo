@@ -1,10 +1,10 @@
 package raft
 
-// NodeID identifies a cluster member.
+// NodeID — идентификатор участника кластера.
 type NodeID string
 
-// Term is a Raft term number (§5.1).
+// Term — номер раунда Raft.
 type Term uint64
 
-// Index is a position in the Raft log; the first entry has index 1 (§5.3).
+// Index — позиция записи лога; пользовательские и no-op записи начинаются с 1.
 type Index uint64

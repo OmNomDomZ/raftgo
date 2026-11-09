@@ -30,8 +30,6 @@ func swaggerUI(mux *http.ServeMux) {
 		mux.HandleFunc("GET "+path, func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", contentType)
 			w.Header().Set("X-Content-Type-Options", "nosniff")
-			// Swagger UI uses inline styles for operation controls, but scripts and
-			// requests remain same-origin. The external specification validator is off.
 			w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
 			_, _ = w.Write(data)
 		})

@@ -10,7 +10,7 @@ import (
 	"raftgo/raft"
 )
 
-// HTTP uses internal cluster addresses, never the public redirect addresses.
+// HTTP отправляет RPC по внутренним адресам участников.
 type HTTP struct {
 	Peers  map[raft.NodeID]string
 	Client *http.Client

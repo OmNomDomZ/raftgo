@@ -13,39 +13,28 @@ import (
 )
 
 type testCluster struct {
-	t        *testing.T
-	nodes    []*Raft
-	ids      []NodeID
-	storages []*fakeStorage
-	timeouts []func() time.Duration // nil: drawn from rands[i]
-	rands    []*rand.Rand
-	stops    []context.CancelFunc
-	done     []chan struct{}
-	clock    *fakeClock
-	tr       *fakeTransport
-	// elections checks Election Safety on every leader change of every node.
-	elections *electionLog
-	// applied checks State Machine Safety on every applied command, and
-	// Leader Completeness on every leader change.
-	applied *applyLog
-	// leaderLogs is each node's log as of the last checkLogs call in which
-	// it was leader, to check Leader Append-Only.
+	t          *testing.T
+	nodes      []*Raft
+	ids        []NodeID
+	storages   []*fakeStorage
+	timeouts   []func() time.Duration
+	rands      []*rand.Rand
+	stops      []context.CancelFunc
+	done       []chan struct{}
+	clock      *fakeClock
+	tr         *fakeTransport
+	elections  *electionLog
+	applied    *applyLog
 	leaderLogs map[NodeID]leaderLog
 }
 
-// Cluster tests run inside a synctest bubble: synctest.Wait tells when every
-// node goroutine has finished reacting to a tick, so the tests never sleep and
-// time exists only as fakeClock's virtual time.
+// Виртуальное время продвигается после завершения реакции всех горутин.
 
-// clusterElectionMin and clusterElectionMax bound every election timeout used
-// in cluster tests.
 const (
 	clusterElectionMin = 100 * time.Millisecond
 	clusterElectionMax = 400 * time.Millisecond
 )
 
-// newTestCluster starts n fully-connected nodes. Node i gets a fixed election
-// timeout of 100ms+10ms*i, so n0 always times out first.
 func newTestCluster(t *testing.T, n int) *testCluster {
 	t.Helper()
 	timeouts := make([]func() time.Duration, n)
@@ -55,14 +44,11 @@ func newTestCluster(t *testing.T, n int) *testCluster {
 	return newTestClusterWithTimeouts(t, timeouts)
 }
 
-// newTestClusterWithTimeouts starts one node per election-timeout source.
 func newTestClusterWithTimeouts(t *testing.T, timeouts []func() time.Duration) *testCluster {
 	t.Helper()
 	return newTestClusterWith(t, timeouts, make([]*rand.Rand, len(timeouts)))
 }
 
-// newRandomizedTestCluster starts n nodes that randomize their election
-// timeouts through Config.Rand, as in production, seeded from seed.
 func newRandomizedTestCluster(t *testing.T, n int, seed uint64) *testCluster {
 	t.Helper()
 	rands := make([]*rand.Rand, n)
@@ -109,8 +95,7 @@ func newTestClusterWith(t *testing.T, timeouts []func() time.Duration, rands []*
 	return c
 }
 
-// start creates node i from its storage, so calling it after crash simulates
-// a restart.
+// Повторный запуск использует прежнее хранилище узла.
 func (c *testCluster) start(i int) {
 	c.t.Helper()
 	var peers []NodeID
@@ -139,7 +124,6 @@ func (c *testCluster) start(i int) {
 	id := c.ids[i]
 	rf.onBecomeLeader = func(term Term) {
 		c.elections.record(id, term)
-		// Called under rf.mu, so the log can be read directly.
 		c.applied.checkLeaderCompleteness(id, term, rf.log)
 	}
 	c.tr.register(c.ids[i], rf)
@@ -165,7 +149,7 @@ func (c *testCluster) start(i int) {
 	}()
 }
 
-// crash stops node i and cuts it off the network; its storage survives.
+// Останавливаем узел и связь, сохраняя его Storage.
 func (c *testCluster) crash(i int) {
 	if c.stops[i] == nil {
 		return
@@ -176,12 +160,8 @@ func (c *testCluster) crash(i int) {
 	c.stops[i] = nil
 }
 
-// tick is the virtual-time step; it is well below the heartbeat interval and
-// election timeouts, so no timer deadline is skipped over by much.
 const tick = 10 * time.Millisecond
 
-// step lets the nodes settle, advances virtual time by one tick and waits
-// until every node has reacted to the timers it fired, then checks the logs.
 func (c *testCluster) step() {
 	synctest.Wait()
 	c.clock.Advance(tick)
@@ -189,15 +169,12 @@ func (c *testCluster) step() {
 	c.checkLogs()
 }
 
-// advance runs the cluster for d of virtual time.
 func (c *testCluster) advance(d time.Duration) {
 	for range d / tick {
 		c.step()
 	}
 }
 
-// advanceUntil runs the cluster until cond holds, failing if it does not
-// within the given amount of virtual time.
 func (c *testCluster) advanceUntil(t *testing.T, within time.Duration, cond func() bool) {
 	t.Helper()
 	synctest.Wait()
@@ -213,7 +190,7 @@ func (c *testCluster) leaders() []*Raft {
 	var out []*Raft
 	for i, rf := range c.nodes {
 		if c.stops[i] == nil {
-			continue // crashed
+			continue
 		}
 		if _, isLeader := rf.GetState(); isLeader {
 			out = append(out, rf)
@@ -222,9 +199,6 @@ func (c *testCluster) leaders() []*Raft {
 	return out
 }
 
-// leaderOtherThan returns a live leader other than old, or nil. A cut-off
-// leader steps down on its own (CheckQuorum), so tests that isolate one wait
-// for its successor rather than for two leaders at once.
 func (c *testCluster) leaderOtherThan(old *Raft) *Raft {
 	for _, rf := range c.leaders() {
 		if rf != old {
@@ -246,7 +220,6 @@ func TestCluster_ElectsExactlyOneLeader(t *testing.T) {
 		}
 		term, _ := leaders[0].GetState()
 
-		// Election Safety (§5.2): at most one leader per term.
 		for _, rf := range c.nodes {
 			nodeTerm, isLeader := rf.GetState()
 			if isLeader && rf != leaders[0] {
@@ -286,7 +259,6 @@ func TestCluster_MinorityPartitionCannotElectLeader(t *testing.T) {
 			return false
 		})
 
-		// Give the minority plenty of time to run elections of its own.
 		c.advance(2500 * time.Millisecond)
 
 		for _, rf := range c.nodes[3:] {
@@ -371,9 +343,6 @@ func TestCluster_LeaderFailureElectsNewLeaderWithHigherTerm(t *testing.T) {
 
 func TestCluster_NewLeaderHeartbeatsImmediately(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		// n0 wins term 1, then draws a long timeout; n1 draws a short one after
-		// granting its vote. n0 must heartbeat right away instead of waiting for
-		// its own election timer, or n1 deposes a healthy leader.
 		c := newTestClusterWithTimeouts(t, []func() time.Duration{
 			seqTimeout(150*time.Millisecond, 300*time.Millisecond),
 			seqTimeout(200*time.Millisecond, 160*time.Millisecond),
@@ -419,17 +388,12 @@ func TestCluster_RestartedLeaderRejoinsAsFollower(t *testing.T) {
 	})
 }
 
-// electionLog records every node's elections to check Election Safety
-// (§5.2): at most one leader per term over the whole run, including leaders
-// that are deposed before a test gets to observe them.
 type electionLog struct {
 	t       *testing.T
 	mu      sync.Mutex
 	leaders map[Term]NodeID
 }
 
-// record is called from the nodes' goroutines, so it reports a violation
-// with Errorf rather than Fatalf.
 func (l *electionLog) record(id NodeID, term Term) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -439,13 +403,7 @@ func (l *electionLog) record(id NodeID, term Term) {
 	l.leaders[term] = id
 }
 
-// splitFirstElection brings a 5-node cluster to a split vote in term 1: n4 is
-// down, n0 holds votes {n0, n2} and n1 holds {n1, n3}, so neither reaches the
-// quorum of 3. Partitions are used only to script who reaches whom first;
-// on return every node except n4 is connected again.
-//
-// With newTestCluster timeouts the next deadlines are n0 at 200ms, n1 and n2
-// at 220ms, n3 at 240ms.
+// Создаём ничью: два кандидата получают по два голоса из пяти.
 func splitFirstElection(t *testing.T, c *testCluster) {
 	t.Helper()
 	c.crash(4)
@@ -522,9 +480,6 @@ func TestCluster_SplitVoteThenThreeToOneElectsLeader(t *testing.T) {
 		c := newTestCluster(t, 5)
 		splitFirstElection(t, c)
 
-		// n4 stays down. Isolating n1 lets n0 (deadline 200ms) collect votes from
-		// n2 and n3 while n1 (deadline 220ms) runs for term 2 on its own vote:
-		// a 3/1 split among the 4 live nodes, where 3 is still a quorum of 5.
 		c.tr.setPartitioned("n1", true)
 		c.advanceUntil(t, time.Second, func() bool {
 			role, term := roleAndTerm(c.nodes[1])
@@ -544,8 +499,6 @@ func TestCluster_SplitVoteThenThreeToOneElectsLeader(t *testing.T) {
 			}
 		}
 
-		// The losing candidate must accept the winner's heartbeats instead of
-		// deposing it.
 		c.tr.setPartitioned("n1", false)
 		c.advance(500 * time.Millisecond)
 
@@ -566,9 +519,7 @@ func TestCluster_CutOffLeaderStepsDownAndRejoinsAsFollower(t *testing.T) {
 		oldLeader := c.waitLeader(t)
 		oldTerm, _ := oldLeader.GetState()
 
-		// Cut off, the old leader hears from no quorum and steps down within
-		// two election timeouts: the first check may still count answers
-		// from before the partition (CheckQuorum).
+		// Первая проверка может учесть старые ответы, поэтому ждём два окна кворума.
 		c.tr.setPartitioned(oldLeader.id, true)
 		c.advanceUntil(t, 2*clusterElectionMax, func() bool {
 			_, isLeader := oldLeader.GetState()
@@ -586,9 +537,7 @@ func TestCluster_CutOffLeaderStepsDownAndRejoinsAsFollower(t *testing.T) {
 			return term > oldTerm
 		})
 
-		// In isolation the old leader keeps starting elections, so its term
-		// may be ahead and force one more election once it rejoins. Its log
-		// is stale, so it must not win it (§5.4.1).
+		// После изоляции term узла может вырасти, но устаревший лог не должен победить.
 		c.tr.setPartitioned(oldLeader.id, false)
 		c.advanceUntil(t, 5*time.Second, func() bool {
 			leaders := c.leaders()
@@ -608,8 +557,6 @@ func TestCluster_EveryNodeKnowsTheLeader(t *testing.T) {
 		old := c.waitLeader(t)
 		c.advanceUntil(t, clusterElectionMin, func() bool { return c.allFollow(old, nil) })
 
-		// Cut off, old steps down and no longer knows a leader, while the
-		// majority follows the one it elects.
 		c.tr.setPartitioned(old.id, true)
 		var leader *Raft
 		c.advanceUntil(t, 5*time.Second, func() bool {
@@ -625,8 +572,6 @@ func TestCluster_EveryNodeKnowsTheLeader(t *testing.T) {
 	})
 }
 
-// allFollow reports whether every live node other than except names leader
-// as its leader.
 func (c *testCluster) allFollow(leader, except *Raft) bool {
 	for i, rf := range c.nodes {
 		if c.stops[i] != nil && rf != except && rf.Leader() != leader.id {
@@ -637,8 +582,6 @@ func (c *testCluster) allFollow(leader, except *Raft) bool {
 }
 
 func TestCluster_HealthyLeaderPassesQuorumChecks(t *testing.T) {
-	// One peer down still leaves a quorum, so the leader must keep its term
-	// through many quorum checks.
 	synctest.Test(t, func(t *testing.T) {
 		c := newTestCluster(t, 3)
 		leader := c.waitLeader(t)
@@ -652,11 +595,7 @@ func TestCluster_HealthyLeaderPassesQuorumChecks(t *testing.T) {
 	})
 }
 
-// TestCluster_RandomFaultsKeepSafety runs a 5-node cluster through random
-// message loss, partitions and crash-restarts while clients submit commands.
-// The cluster checks every safety property of Figure 3 along the way; see
-// electionLog, applyLog and checkLogs. Then it heals everything and expects
-// a stable leader that commits a command on every node.
+// Проверяем безопасность при случайных потерях сообщений, разделениях и перезапусках.
 func TestCluster_RandomFaultsKeepSafety(t *testing.T) {
 	for seed := range uint64(20) {
 		t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {
@@ -667,14 +606,9 @@ func TestCluster_RandomFaultsKeepSafety(t *testing.T) {
 	}
 }
 
-// TestCluster_RandomDelaysKeepSafety adds random latency to the faults of
-// TestCluster_RandomFaultsKeepSafety. Some messages outlive their sender's
-// timeout, so requests arrive late and out of order: an AppendEntries after
-// a newer one of the same leader, or at a node that has restarted since.
+// Добавляем задержки, чтобы старые запросы приходили после смены term и роли.
 func TestCluster_RandomDelaysKeepSafety(t *testing.T) {
 	late := 0
-	// More seeds than TestCluster_RandomFaultsKeepSafety: a reordering bug
-	// needs an unlucky late message, which only some runs produce.
 	for seed := range uint64(100) {
 		t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -682,23 +616,19 @@ func TestCluster_RandomDelaysKeepSafety(t *testing.T) {
 			})
 		})
 	}
-	// Per seed it depends on how much traffic the faults let through.
 	if late == 0 && !t.Failed() {
 		t.Fatalf("setup: no request arrived after its sender gave up on it")
 	}
 }
 
-// runRandomFaults returns how many requests arrived after their sender had
-// given up on them.
 func runRandomFaults(t *testing.T, seed uint64, delays bool) (late int) {
 	const n = 5
 	c := newRandomizedTestCluster(t, n, seed)
 
-	dropRNG := rand.New(rand.NewPCG(seed, 1000)) // called under the transport's mu
+	dropRNG := rand.New(rand.NewPCG(seed, 1000))
 	c.tr.setDrop(func() bool { return dropRNG.Float64() < 0.1 })
 	if delays {
-		// Mostly well within AppendEntriesTimeout, sometimes far beyond it.
-		delayRNG := rand.New(rand.NewPCG(seed, 3000)) // called under the transport's mu
+		delayRNG := rand.New(rand.NewPCG(seed, 3000))
 		c.tr.setDelay(c.clock, func() time.Duration {
 			if delayRNG.Float64() < 0.2 {
 				return 60*time.Millisecond + time.Duration(delayRNG.Int64N(int64(240*time.Millisecond)))
@@ -710,8 +640,6 @@ func runRandomFaults(t *testing.T, seed uint64, delays bool) (late int) {
 	faults := rand.New(rand.NewPCG(seed, 2000))
 	partitioned := make([]bool, n)
 	for step := range 3 * time.Second / tick {
-		// Submit to every node that believes it leads, cut off or not, so
-		// deposed leaders pile up entries that must be overwritten.
 		if faults.Float64() < 0.3 {
 			for _, rf := range c.leaders() {
 				_, _, _ = rf.Start([]byte(fmt.Sprint("cmd", step)))
@@ -742,9 +670,7 @@ func runRandomFaults(t *testing.T, seed uint64, delays bool) (late int) {
 		}
 		c.tr.setPartitioned(c.ids[i], false)
 	}
-	// A follower that missed heartbeats before the heal may still time out
-	// and legitimately depose the first leader. A leader that has held on for
-	// a full election timeout has reset every follower's timer.
+	// Ждём устойчивого лидера: вернувшийся follower ещё может запустить выборы.
 	var leader *Raft
 	var leaderTerm Term
 	c.advanceUntil(t, 5*time.Second, func() bool {

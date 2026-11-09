@@ -12,9 +12,7 @@ var (
 	errInvalidReply = errors.New("raft: invalid reply")
 )
 
-// logRPCFailure logs an outgoing RPC that got no usable reply. A lost
-// message is routine, but a reply that breaks the protocol means the peer or
-// the transport is buggy.
+// Пишем ошибки RPC в лог; неверные ответы имеют уровень ERROR.
 func (rf *Raft) logRPCFailure(rpc string, peer NodeID, term Term, err error) {
 	level := slog.LevelDebug
 	if errors.Is(err, errInvalidReply) || errors.Is(err, errNilReply) {

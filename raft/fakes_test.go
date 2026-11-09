@@ -10,9 +10,7 @@ import (
 	"time"
 )
 
-// fakeClock is shared by all nodes of a test cluster so a test can advance
-// virtual time for all of them at once. Like time.Timer since Go 1.23, a tick
-// that is never read is not re-sent, and Stop/Reset discard a pending tick.
+// fakeClock позволяет всем узлам теста использовать одно управляемое время.
 type fakeClock struct {
 	mu     sync.Mutex
 	now    time.Time
@@ -42,10 +40,9 @@ func (c *fakeClock) NewTimer(d time.Duration) Timer {
 	return t
 }
 
-// Advance moves virtual time forward by d and fires every due timer in
-// deadline order.
+// Продвигаем время и выдаём сигналы таймеров в порядке их сроков.
 func (c *fakeClock) Advance(d time.Duration) {
-	// Sends happen under mu so they cannot interleave with Stop/Reset.
+	// Сигналы таймера не должны пересекаться со Stop или Reset.
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.now = c.now.Add(d)
@@ -100,13 +97,11 @@ func (t *fakeTimer) C() <-chan time.Time        { return t.c }
 func (t *fakeTimer) Stop() bool                 { return t.clock.stopTimer(t) }
 func (t *fakeTimer) Reset(d time.Duration) bool { return t.clock.resetTimer(t, d) }
 
-// fixedTimeout lets a test decide which node's election timer fires first.
 func fixedTimeout(d time.Duration) func() time.Duration {
 	return func() time.Duration { return d }
 }
 
-// seqTimeout returns ds in order, then repeats the last one, to script an
-// unlucky sequence of randomized election timeouts.
+// Возвращаем заданные таймауты по очереди, затем повторяем последний.
 func seqTimeout(ds ...time.Duration) func() time.Duration {
 	var mu sync.Mutex
 	i := 0
@@ -119,10 +114,7 @@ func seqTimeout(ds ...time.Duration) func() time.Duration {
 	}
 }
 
-// boundedTimeout fails t whenever f returns a duration outside [lo, hi).
-// HeartbeatInterval is only validated against the minimum, so a scripted
-// timeout outside the configured bounds would test an unsupported setup. A
-// nil f stays nil, so the node draws its own randomized timeouts.
+// Проверяем, что тестовый таймаут остаётся в допустимом диапазоне.
 func boundedTimeout(t testing.TB, lo, hi time.Duration, f func() time.Duration) func() time.Duration {
 	if f == nil {
 		return nil
@@ -130,7 +122,6 @@ func boundedTimeout(t testing.TB, lo, hi time.Duration, f func() time.Duration) 
 	return func() time.Duration {
 		d := f()
 		if d < lo || d >= hi {
-			// Errorf, not Fatalf: this runs on the nodes' goroutines.
 			t.Errorf("scripted election timeout %v outside [%v, %v)", d, lo, hi)
 		}
 		return d
@@ -141,9 +132,9 @@ type fakeStorage struct {
 	mu          sync.Mutex
 	state       PersistentState
 	log         []LogEntry
-	saves       int  // successful SaveState calls
-	logWrites   int  // successful StoreLog calls
-	failSave    bool // fails SaveState and StoreLog
+	saves       int
+	logWrites   int
+	failSave    bool
 	failLoad    bool
 	failLoadLog bool
 }
@@ -203,7 +194,6 @@ func (s *fakeStorage) LoadLog() ([]LogEntry, error) {
 	return slices.Clone(s.log), nil
 }
 
-// storedLog returns a copy of the stored log.
 func (s *fakeStorage) storedLog() []LogEntry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -216,26 +206,17 @@ func (s *fakeStorage) logWriteCount() int {
 	return s.logWrites
 }
 
-// fakeTransport calls the target node's handlers synchronously in the
-// caller's goroutine, unless a delay is set; see roundTrip. A partitioned
-// node can neither send nor receive. If a drop function is set, each request
-// and each reply is lost when it returns true; a lost reply means the target
-// has already acted on the request.
+// fakeTransport передаёт RPC в памяти и позволяет моделировать потери и разделения сети.
 type fakeTransport struct {
-	mu          sync.Mutex
-	nodes       map[NodeID]RPCHandler
-	partitioned map[NodeID]bool
-	drop        func() bool
-	// delay, if set, draws the latency of each request and each reply on
-	// clock. It is called under mu.
-	delay func() time.Duration
-	clock *fakeClock
-	// closed releases messages still in flight when a test ends.
-	closed chan struct{}
-	// appendEntries counts the AppendEntries requests delivered to each node.
+	mu            sync.Mutex
+	nodes         map[NodeID]RPCHandler
+	partitioned   map[NodeID]bool
+	drop          func() bool
+	delay         func() time.Duration
+	clock         *fakeClock
+	closed        chan struct{}
 	appendEntries map[NodeID]int
-	// late counts requests delivered after their sender gave up on them.
-	late int
+	late          int
 }
 
 var (
@@ -254,15 +235,12 @@ func newFakeTransport() *fakeTransport {
 	}
 }
 
-// setDelay makes every request and every reply take delay() of virtual time
-// on clock; nil makes delivery synchronous again.
 func (f *fakeTransport) setDelay(clock *fakeClock, delay func() time.Duration) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.clock, f.delay = clock, delay
 }
 
-// close drops every message still in flight, so their goroutines exit.
 func (f *fakeTransport) close() {
 	close(f.closed)
 }
@@ -325,8 +303,6 @@ func (f *fakeTransport) route(from, to NodeID) (RPCHandler, error) {
 	return h, nil
 }
 
-// linked returns the handler a message from from to to reaches now, if the
-// link between them is up.
 func (f *fakeTransport) linked(from, to NodeID) (RPCHandler, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -334,8 +310,6 @@ func (f *fakeTransport) linked(from, to NodeID) (RPCHandler, bool) {
 	return h, ok && !f.partitioned[from] && !f.partitioned[to]
 }
 
-// travel waits out one message's latency, reporting false if the transport
-// closed first.
 func (f *fakeTransport) travel(clock *fakeClock, delay func() time.Duration) bool {
 	f.mu.Lock()
 	d := delay()
@@ -353,11 +327,7 @@ func (f *fakeTransport) travel(clock *fakeClock, delay func() time.Duration) boo
 	}
 }
 
-// roundTrip delivers a request from from to to through handle and returns
-// the reply. With a delay set, the messages travel in their own goroutine,
-// so the sender can give up on ctx while its request is still in flight. The
-// request then arrives late, possibly after newer ones and at a restarted
-// incarnation of the target, as on a real network.
+// Доставляем запрос и ответ с заданной задержкой; отменённый запрос ещё может дойти.
 func roundTrip[Reply any](ctx context.Context, f *fakeTransport, from, to NodeID, handle func(RPCHandler) (*Reply, error)) (*Reply, error) {
 	h, err := f.route(from, to)
 	if err != nil {
@@ -391,8 +361,6 @@ func roundTrip[Reply any](ctx context.Context, f *fakeTransport, from, to NodeID
 			res <- result{nil, errClosed}
 			return
 		}
-		// Whatever the target is by now receives the request, unless the
-		// link went down while it was in flight.
 		h, ok := f.linked(from, to)
 		if !ok {
 			res <- result{nil, errPartitioned}
@@ -441,8 +409,6 @@ func (f *fakeTransport) AppendEntries(ctx context.Context, target NodeID, args *
 	})
 }
 
-// stubPeer answers every RPC with a fixed term and no vote/success, standing
-// in for a peer that has moved to a higher term.
 type stubPeer struct{ term Term }
 
 func (p stubPeer) HandleRequestVote(*RequestVoteArgs) (*RequestVoteReply, error) {
@@ -453,7 +419,6 @@ func (p stubPeer) HandleAppendEntries(*AppendEntriesArgs) (*AppendEntriesReply, 
 	return &AppendEntriesReply{Term: p.term}, nil
 }
 
-// grantingPeer grants every vote in the requested term.
 type grantingPeer struct{}
 
 func (grantingPeer) HandleRequestVote(args *RequestVoteArgs) (*RequestVoteReply, error) {
@@ -464,8 +429,6 @@ func (grantingPeer) HandleAppendEntries(args *AppendEntriesArgs) (*AppendEntries
 	return &AppendEntriesReply{Term: args.Term, Success: true}, nil
 }
 
-// wrongTermPeer grants every vote and acknowledges every heartbeat, but in
-// a fixed term whatever the request's, which no correct peer does.
 type wrongTermPeer struct{ term Term }
 
 func (p wrongTermPeer) HandleRequestVote(*RequestVoteArgs) (*RequestVoteReply, error) {
@@ -476,8 +439,7 @@ func (p wrongTermPeer) HandleAppendEntries(*AppendEntriesArgs) (*AppendEntriesRe
 	return &AppendEntriesReply{Term: p.term, Success: true}, nil
 }
 
-// blockingTransport holds every RPC until its context is done, then reports
-// the RPC's term on released.
+// Удерживаем RPC до отмены контекста и записываем его term.
 type blockingTransport struct{ released chan Term }
 
 func newBlockingTransport() blockingTransport {
@@ -496,8 +458,7 @@ func (b blockingTransport) AppendEntries(ctx context.Context, _ NodeID, args *Ap
 	return nil, ctx.Err()
 }
 
-// nilTransport violates the Transport contract by returning neither a reply
-// nor an error.
+// Нарушаем контракт транспорта: не возвращаем ни ответ, ни ошибку.
 type nilTransport struct{}
 
 func (nilTransport) RequestVote(context.Context, NodeID, *RequestVoteArgs) (*RequestVoteReply, error) {

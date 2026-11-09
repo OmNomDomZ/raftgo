@@ -148,7 +148,6 @@ func TestHTTPClusterCommitRedirectFailover(t *testing.T) {
 	if resp.StatusCode != 201 {
 		t.Fatalf("failover append: %d", resp.StatusCode)
 	}
-	// With only two of five nodes alive, no write may be reported committed.
 	alive := 0
 	for i := range count {
 		if i != old && i != leader {

@@ -140,8 +140,7 @@ func TestNew_DefaultElectionTimeoutBounds(t *testing.T) {
 	}
 }
 
-// TestDefaultOnFatal_ReportsAndExits re-runs itself in a subprocess, since the
-// default OnFatal exits the process.
+// Проверяем завершение по OnFatal в отдельном процессе, чтобы не остановить весь тест.
 func TestDefaultOnFatal_ReportsAndExits(t *testing.T) {
 	const msg = "raft: test invariant"
 	if os.Getenv("RAFT_TEST_DEFAULT_ON_FATAL") == "1" {
@@ -151,7 +150,7 @@ func TestDefaultOnFatal_ReportsAndExits(t *testing.T) {
 			t.Fatalf("validateAndSetDefaults: %v", err)
 		}
 		cfg.OnFatal(msg)
-		return // unreachable unless OnFatal returned; the parent sees exit 0
+		return
 	}
 
 	cmd := exec.Command(os.Args[0], "-test.run=^TestDefaultOnFatal_ReportsAndExits$")

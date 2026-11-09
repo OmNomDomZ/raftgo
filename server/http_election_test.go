@@ -15,7 +15,6 @@ import (
 	"raftgo/storage"
 )
 
-// Grants are released by the test; no network or wall-clock election races.
 type electionTransport struct {
 	grants map[raft.NodeID]chan bool
 }
@@ -71,7 +70,6 @@ func TestHTTPElectionRolesAndVotes(t *testing.T) {
 			if got.Node.Election() != want || !reflect.DeepEqual(got.Members, members) {
 				t.Fatalf("%s: got %+v; want %+v, members %v", path, got, want, members)
 			}
-			// Stage 2 retains the full schema, including zero-valued fields.
 			var raw map[string]json.RawMessage
 			if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
 				t.Fatal(err)
@@ -108,7 +106,6 @@ func TestHTTPElectionRolesAndVotes(t *testing.T) {
 		synctest.Wait()
 		check("Follower", 0, "", "", 0, true)
 
-		// Duplicate requests grant the same vote, never a second candidate.
 		rpc := RPCHandler(node)
 		vote := func(candidate string, granted bool) {
 			t.Helper()
@@ -134,12 +131,10 @@ func TestHTTPElectionRolesAndVotes(t *testing.T) {
 		tr.grants["B"] <- true
 		synctest.Wait()
 		check("Candidate", 2, "", "A", 2, true)
-		// Same-term heartbeat steps down without changing this node's vote.
 		if _, err := node.HandleAppendEntries(&raft.AppendEntriesArgs{Term: 2, LeaderID: "C"}); err != nil {
 			t.Fatal(err)
 		}
 		check("Follower", 2, "C", "A", 0, true)
-		// A new term clears voted_for; leader_id does not imply a vote.
 		if _, err := node.HandleAppendEntries(&raft.AppendEntriesArgs{Term: 3, LeaderID: "C"}); err != nil {
 			t.Fatal(err)
 		}
@@ -153,7 +148,6 @@ func TestHTTPElectionRolesAndVotes(t *testing.T) {
 		check("Leader", 4, "A", "A", 0, true)
 		cancel()
 		synctest.Wait()
-		// Role is the last local role, but a stopped node knows no leader.
 		check("Leader", 4, "", "A", 0, false)
 	})
 }

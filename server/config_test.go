@@ -39,7 +39,6 @@ func TestConfigValidation(t *testing.T) {
 	}
 }
 
-// Old disk configs must fail loudly rather than suggest that data is durable.
 func TestLoadMemoryConfig(t *testing.T) {
 	config := `{"listen":":8080","rpc_listen":":9000","members":[{"id":"n","rpc_url":"http://n:9000","api_url":"http://localhost:8001"}]}`
 	path := filepath.Join(t.TempDir(), "cluster.json")

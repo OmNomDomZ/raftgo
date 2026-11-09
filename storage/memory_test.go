@@ -70,7 +70,7 @@ func TestMemoryCopiesAndSuffixReplacement(t *testing.T) {
 	if got = loadLog(t, &m); len(got) != 0 {
 		t.Fatalf("truncate all: %+v", got)
 	}
-	storeLog(t, &m, 1, nil) // empty log, one-past-end is still valid
+	storeLog(t, &m, 1, nil)
 }
 
 func TestMemoryInvalidIndexDoesNotMutate(t *testing.T) {
@@ -138,8 +138,7 @@ func TestMemoryConcurrentOperations(t *testing.T) {
 	wg.Wait()
 }
 
-// No timer ticks or outgoing RPCs: these tests drive only inbound messages.
-// Reset signals that Run has armed its election timer, avoiding polling/sleeps.
+// Тестовые часы отмечают запуск Run, но не запускают выборы по таймеру.
 type quietClock struct {
 	ready chan struct{}
 	once  sync.Once
@@ -204,7 +203,6 @@ func TestMemoryRestartPreservesVoteAndLogMatching(t *testing.T) {
 	if err != nil || vote.VoteGranted {
 		t.Fatalf("second vote in same term: %+v, %v", vote, err)
 	}
-	// A mismatching previous term must not change the restored prefix or tail.
 	reply, err = node.HandleAppendEntries(&raft.AppendEntriesArgs{Term: 3, LeaderID: "B", PrevLogIndex: 1, PrevLogTerm: 2, Entries: []raft.LogEntry{{Term: 3, Command: []byte("wrong")}}})
 	if err != nil || reply.Success {
 		t.Fatalf("mismatched prefix accepted: %+v, %v", reply, err)
@@ -223,7 +221,6 @@ func TestMemoryRestartPreservesVoteAndLogMatching(t *testing.T) {
 	if want := []raft.LogEntry{entries[0], replacement}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("restart lost replacement: %+v", got)
 	}
-	// Even in a new term, a candidate with an older last-log term cannot win.
 	vote, err = node.HandleRequestVote(&raft.RequestVoteArgs{Term: 4, CandidateID: "C", LastLogIndex: 10, LastLogTerm: 2})
 	if err != nil || vote.VoteGranted {
 		t.Fatalf("stale candidate granted vote: %+v, %v", vote, err)

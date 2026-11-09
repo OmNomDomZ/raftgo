@@ -5,9 +5,7 @@ import (
 	"testing"
 )
 
-// These tests cover stepping down while storage is failing: the node must
-// adopt the higher term in memory, but must not promise anything based on it
-// until it is durable (§5.1).
+// При большем term узел отступает даже при ошибке Storage, но не выдаёт несохранённых обещаний.
 
 func TestRequestVoteReply_HigherTermStepsDownDespitePersistFailure(t *testing.T) {
 	rf, st := newTestNode(t, "A", "B", "C")
@@ -92,8 +90,7 @@ func TestHandleAppendEntries_NonDurableTermGetsNoReplyUntilStorageRecovers(t *te
 }
 
 func TestRestart_AfterNonDurableStepDownKeepsDurableVote(t *testing.T) {
-	// The in-memory term was never durable, so a restart rolls it back; the
-	// vote cast in the durable term must still hold (Election Safety).
+	// После возврата к сохранённому term должен остаться ранее выданный голос.
 	rf, st := newTestNode(t, "A", "B", "C")
 	if !mustHandleRequestVote(t, rf, &RequestVoteArgs{Term: 1, CandidateID: "B"}).VoteGranted {
 		t.Fatalf("setup: expected vote for B granted")

@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// entriesForwarding sends writes only to configured members and follows explicit 307 replies.
+// Передаём запись известному участнику и следуем только разрешённым ответам 307.
 func (a *API) entriesForwarding(mux *http.ServeMux) {
 	members := make(map[string]string, len(a.Members))
 	redirects := make(map[string]string, len(a.Members))
@@ -47,7 +47,7 @@ func (a *API) entriesForwarding(mux *http.ServeMux) {
 			req.Header.Set("Content-Type", "application/json")
 			resp, err := client.Do(req)
 			if err != nil {
-				// Delivery may have succeeded. Never repeat a POST after a lost response.
+				// Потеря ответа не исключает успешную запись, поэтому POST не повторяем.
 				problem(w, 504, "outcome unknown; request was not retried; retry may duplicate command")
 				return
 			}
@@ -70,8 +70,7 @@ func (a *API) entriesForwarding(mux *http.ServeMux) {
 				problem(w, 503, "leader is not a configured member")
 				return
 			}
-			// Only an explicit 307 (the node rejected this write as follower) permits
-			// forwarding. No discovery-and-retry after 503, 504, or a network failure.
+			// Передаём запрос дальше только после явного отказа follower с кодом 307.
 			target = endpoint
 		}
 		problem(w, 503, "leader redirect cycle")

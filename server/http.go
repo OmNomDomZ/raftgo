@@ -30,7 +30,7 @@ func NewAPI(node *raft.Raft, members []Member) *API {
 	return &API{Node: node, Members: members, changed: make(chan struct{}), logger: slog.Default().With("node", node.Status().ID)}
 }
 
-// Consume must run for the lifetime of the node, including during restart replay.
+// Consume отмечает обработанные записи и будит ожидающие HTTP-запросы.
 func (a *API) Consume(ctx context.Context, ch <-chan raft.ApplyMsg) {
 	for {
 		select {
@@ -92,7 +92,6 @@ func (a *API) Handler() http.Handler {
 			index := raft.Index(i + 1)
 			out[i] = entry{index, e.Term, kind, string(e.Command), index <= s.CommitIndex}
 		}
-		// Status and entries come from one local inspection.
 		if r.URL.Path == "/log" {
 			writeJSON(w, 200, struct {
 				Node        raft.Status `json:"node"`
@@ -131,8 +130,7 @@ func (a *API) failure(w http.ResponseWriter, r *http.Request, err error) {
 	problem(w, 503, err.Error())
 }
 func (a *API) appendEntry(w http.ResponseWriter, r *http.Request) {
-	// encoding/json replaces invalid UTF-8 with U+FFFD. Reject it before
-	// decoding so the replicated string cannot silently differ from the input.
+	// Отклоняем неверный UTF-8 до JSON-декодирования, чтобы строка не изменилась незаметно.
 	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 6*MaxCommandBytes+128))
 	if err != nil || !utf8.Valid(raw) {
 		problem(w, 400, "expected UTF-8 JSON within request size limit")
@@ -161,8 +159,7 @@ func (a *API) appendEntry(w http.ResponseWriter, r *http.Request) {
 		applied, changed := a.applied, a.changed
 		a.mu.Unlock()
 		if applied >= index {
-			// An index alone is insufficient: a new leader may replace an uncommitted
-			// entry at that index. Only the original term proves this write committed.
+			// Проверяем исходный term: на том же индексе уже могла примениться другая запись.
 			_, entries := a.Node.InspectLog()
 			if index <= raft.Index(len(entries)) && entries[index-1].Term == term {
 				writeJSON(w, 201, map[string]any{"index": index, "term": term, "committed": true})
@@ -180,7 +177,7 @@ func (a *API) appendEntry(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// RPCHandler belongs on a private listener, separate from the public API.
+// RPCHandler обслуживает внутренний порт обмена Raft, отдельно от клиентского API.
 func RPCHandler(node raft.RPCHandler) http.Handler {
 	var heartbeatLogMu sync.Mutex
 	var lastHeartbeatLog time.Time

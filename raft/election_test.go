@@ -14,9 +14,6 @@ import (
 )
 
 func TestRequestVoteReply_FromEarlierTermIsNotCounted(t *testing.T) {
-	// A grant for term 2 that arrives while the node campaigns in term 3 was
-	// not a vote for this election; counting it could elect two leaders in
-	// term 3 (Election Safety).
 	rf, _ := newTestNode(t, "A", "B", "C")
 	rf.transport.(*fakeTransport).register("B", grantingPeer{})
 	setRoleAndTerm(rf, Candidate, 3, "A")
@@ -34,9 +31,6 @@ func TestRequestVoteReply_FromEarlierTermIsNotCounted(t *testing.T) {
 }
 
 func TestRequestVoteReply_DuplicateGrantIsCountedOnce(t *testing.T) {
-	// A transport that retries could deliver the same peer's grant twice;
-	// counting it twice would let a candidate win without a real majority
-	// (Election Safety).
 	rf, _ := newTestNode(t, "A", "B", "C", "D", "E")
 	tr := rf.transport.(*fakeTransport)
 	tr.register("B", grantingPeer{})
@@ -58,7 +52,6 @@ func TestRequestVoteReply_DuplicateGrantIsCountedOnce(t *testing.T) {
 }
 
 func TestElectionTimeout_StaleTickAfterHeartbeatIsIgnored(t *testing.T) {
-	// Run can receive the tick while a handler holds mu and re-arms the timer.
 	rf, _ := newTestNode(t, "A", "B", "C")
 	clock := rf.clock.(*fakeClock)
 	setRoleAndTerm(rf, Follower, 1, "")
@@ -67,7 +60,7 @@ func TestElectionTimeout_StaleTickAfterHeartbeatIsIgnored(t *testing.T) {
 	rf.mu.Unlock()
 
 	clock.Advance(time.Second)
-	<-rf.electionTimer.C() // Run took the tick but has not locked mu yet.
+	<-rf.electionTimer.C()
 	mustHandleAppendEntries(t, rf, &AppendEntriesArgs{Term: 1, LeaderID: "B"})
 	rf.onElectionTimeout(context.Background())
 
@@ -101,8 +94,6 @@ func TestReply_NilWithoutErrorIsAFailedRPC(t *testing.T) {
 }
 
 func TestReply_WrongTermIsAFailedRPC(t *testing.T) {
-	// A grant from another term is not a vote in this election, and a reply
-	// that breaks Figure 2 must not move the node to its term either.
 	for _, peerTerm := range []Term{1, 3} {
 		t.Run(fmt.Sprintf("peer term %d", peerTerm), func(t *testing.T) {
 			rf, _ := newTestNode(t, "A", "B", "C")
@@ -125,8 +116,7 @@ func TestReply_WrongTermIsAFailedRPC(t *testing.T) {
 }
 
 func TestReply_InvalidIsLoggedAsError(t *testing.T) {
-	// A lost message is routine; a reply that breaks the protocol is a bug in
-	// the peer or the transport and must not be hidden at debug level.
+	// Потеря связи — DEBUG, нарушение формата ответа — ERROR.
 	var logs bytes.Buffer
 	cfg := testConfig(&fakeStorage{}, "A", "B", "C")
 	cfg.Logger = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
@@ -136,7 +126,6 @@ func TestReply_InvalidIsLoggedAsError(t *testing.T) {
 	}
 	setRoleAndTerm(rf, Candidate, 2, "A")
 
-	// C is not registered, so the request is lost.
 	rf.requestVote(context.Background(), "C", &RequestVoteArgs{Term: 2, CandidateID: "A"})
 	rf.sendAppendEntries(context.Background(), "C", &AppendEntriesArgs{Term: 2, LeaderID: "A"})
 	if logs.Len() != 0 {
@@ -154,8 +143,6 @@ func TestReply_InvalidIsLoggedAsError(t *testing.T) {
 }
 
 func TestStartElection_PersistFailureDoesNotCampaign(t *testing.T) {
-	// A candidate must have durably voted for itself in its new term, or a
-	// restart could let it vote for another node in that term (§5.1).
 	synctest.Test(t, func(t *testing.T) {
 		rf, st := newTestNode(t, "A", "B", "C")
 		defer rf.wg.Wait()
@@ -227,8 +214,6 @@ func TestStopped_NodeIsNotLeaderAndChangesNothing(t *testing.T) {
 	if _, isLeader := rf.GetState(); isLeader {
 		t.Fatalf("stopped node reports itself as leader")
 	}
-	// A stopped node answers nothing: Success=false would claim a log
-	// mismatch (§5.3).
 	if reply, err := rf.HandleRequestVote(&RequestVoteArgs{Term: 5, CandidateID: "B"}); !errors.Is(err, ErrStopped) || reply != nil {
 		t.Fatalf("stopped node answered RequestVote: reply=%+v err=%v", reply, err)
 	}
@@ -282,9 +267,7 @@ func TestFatal_OnFatalReturningStillStopsTheNode(t *testing.T) {
 	rf.adoptHigherTermLocked(3)
 }
 
-// blockedNode returns a node whose RPCs hang until cancelled. RequestVoteTimeout is
-// far beyond anything a test waits for, so a released RequestVote was
-// cancelled; a heartbeat also times out after HeartbeatInterval.
+// RPC ожидают отмены контекста; их таймауты в этом тесте не срабатывают.
 func blockedNode(t *testing.T) (*Raft, blockingTransport) {
 	t.Helper()
 	tr := newBlockingTransport()
@@ -298,7 +281,6 @@ func blockedNode(t *testing.T) (*Raft, blockingTransport) {
 	return rf, tr
 }
 
-// releasedTerms returns the terms of the RPCs released so far.
 func releasedTerms(tr blockingTransport) []Term {
 	var terms []Term
 	for {
@@ -366,7 +348,7 @@ func TestRPCs_BecomingLeaderCancelsOutstandingVotes(t *testing.T) {
 
 		rf.mu.Lock()
 		rf.startElectionLocked(ctx)
-		rf.votes["B"] = struct{}{} // as if B's grant arrived through another path
+		rf.votes["B"] = struct{}{}
 		rf.becomeLeaderLocked()
 		rf.mu.Unlock()
 		synctest.Wait()
@@ -377,8 +359,7 @@ func TestRPCs_BecomingLeaderCancelsOutstandingVotes(t *testing.T) {
 }
 
 func TestHeartbeats_AtMostOneInFlightPerPeer(t *testing.T) {
-	// Heartbeats to a slow peer must not pile up: in 3B, concurrent
-	// AppendEntries to one peer could arrive out of order.
+	// К одному соседу не должно накапливаться несколько одновременных RPC.
 	synctest.Test(t, func(t *testing.T) {
 		rf, tr := blockedNode(t)
 		ctx, stop := runNode(rf)
@@ -398,9 +379,6 @@ func TestHeartbeats_AtMostOneInFlightPerPeer(t *testing.T) {
 }
 
 func TestHeartbeats_HungRPCTimesOutAfterAppendEntriesTimeout(t *testing.T) {
-	// A lost heartbeat must not hold back the next one for longer than
-	// AppendEntriesTimeout, or the peer's election timer fires under a
-	// healthy leader. The deadline follows the node's Clock, not wall time.
 	synctest.Test(t, func(t *testing.T) {
 		rf, tr := blockedNode(t)
 		ctx, stop := runNode(rf)
@@ -421,7 +399,6 @@ func TestHeartbeats_HungRPCTimesOutAfterAppendEntriesTimeout(t *testing.T) {
 			t.Fatalf("expected both hung heartbeats released after AppendEntriesTimeout, got %v", got)
 		}
 
-		// The next heartbeat goes out and times out the same way.
 		rf.onHeartbeatTimeout(ctx)
 		synctest.Wait()
 		clock.Advance(rf.appendEntriesTimeout)

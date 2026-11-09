@@ -14,8 +14,7 @@ import (
 	"raftgo/storage"
 )
 
-// applyTestTransport lets a leader be elected, then isolates it without
-// discarding its term, vote or log. No network or wall-clock sleeps are used.
+// Тестовый транспорт позволяет изолировать избранного лидера без потери памяти.
 type applyTestTransport struct{ isolated atomic.Bool }
 
 func (tr *applyTestTransport) RequestVote(_ context.Context, _ raft.NodeID, a *raft.RequestVoteArgs) (*raft.RequestVoteReply, error) {

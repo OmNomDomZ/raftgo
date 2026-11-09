@@ -48,7 +48,7 @@ func TestHTTPEntriesStringsAndValidation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		api, _, _ := stringAPI(t, true)
 		h := api.Handler()
-		// The size limit counts decoded UTF-8 bytes, not JSON wire bytes.
+		// Лимит считается по байтам декодированной строки UTF-8, а не по размеру JSON.
 		commands := []string{"", "Привет 🌊\n\"\\", "same", "same", strings.Repeat("x", MaxCommandBytes), strings.Repeat("я", MaxCommandBytes/2), strings.Repeat("\x00", MaxCommandBytes)}
 		for i, command := range commands {
 			body, _ := json.Marshal(map[string]string{"command": command})
@@ -95,7 +95,7 @@ func TestHTTPEntriesTimeoutDoesNotRetry(t *testing.T) {
 		if len(log) != 2 || s.CommitIndex != 1 {
 			t.Fatalf("retry or premature commit: %+v %+v", s, log)
 		}
-		// The same proposal can still commit after the timeout, without a second POST.
+		// Запись может подтвердиться после таймаута без повторного POST.
 		tr.isolated.Store(false)
 		time.Sleep(time.Minute)
 		synctest.Wait()
@@ -117,7 +117,6 @@ func TestHTTPEntriesFollowerRedirectAndUnknownLeader(t *testing.T) {
 		if w.Code != 307 || w.Header().Get("Location") != "http://b/entries" {
 			t.Fatalf("%d %v", w.Code, w.Header())
 		}
-		// A higher-term vote clears the known leader.
 		if _, err := api.Node.HandleRequestVote(&raft.RequestVoteArgs{Term: s.Term + 2, CandidateID: "b", LastLogIndex: 1, LastLogTerm: log[0].Term}); err != nil {
 			t.Fatal(err)
 		}
@@ -136,7 +135,6 @@ func TestHTTPLogSnapshotWithTailAndNoop(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		api, tr, _ := stringAPI(t, true)
 		tr.isolated.Store(true)
-		// Add an uncommitted tail directly; diagnostics must neither wait nor redirect.
 		if _, _, err := api.Node.Start([]byte("tail")); err != nil {
 			t.Fatal(err)
 		}

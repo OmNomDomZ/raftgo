@@ -5,29 +5,22 @@ import (
 	"slices"
 )
 
-// EntryKind tells what a log entry carries.
 type EntryKind uint8
 
 const (
-	// EntryCommand carries a client command for the state machine.
 	EntryCommand EntryKind = iota
-	// EntryNoOp is appended by every new leader. A leader only commits
-	// entries of its own term by counting replicas (§5.4.2), so without it
-	// entries from earlier terms would wait for the next client command (§8).
+	// No-op нового лидера позволяет подтвердить префикс через запись текущего term.
 	EntryNoOp
 )
 
-// LogEntry is one entry of the replicated log (Figure 2).
+// LogEntry хранит term, вид записи и байты команды.
 type LogEntry struct {
 	Term    Term
 	Kind    EntryKind
-	Command []byte // nil for EntryNoOp
+	Command []byte // Для no-op команда отсутствует.
 }
 
-// The in-memory log starts with a sentinel entry of term 0 at index 0, so
-// index i is rf.log[i] and PrevLogIndex 0 always matches (§5.3). Everything
-// else goes through the helpers below, so log compaction only has to change
-// them.
+// На позиции 0 всегда находится служебная запись term 0.
 
 func (rf *Raft) lastLogIndexLocked() Index {
 	return Index(len(rf.log) - 1)
@@ -37,16 +30,11 @@ func (rf *Raft) lastLogTermLocked() Term {
 	return rf.log[len(rf.log)-1].Term
 }
 
-// termAtLocked returns the term of the entry at i, which must be at most
-// lastLogIndexLocked.
 func (rf *Raft) termAtLocked(i Index) Term {
 	return rf.log[i].Term
 }
 
-// entriesLocked returns a copy of the entries in [lo, hi). It is a copy
-// because the log's backing array is overwritten when a suffix is replaced,
-// while the result may still be in flight in an RPC or on its way to
-// ApplyCh.
+// Копируем участок лога, чтобы замена хвоста не меняла уже отправленные записи.
 func (rf *Raft) entriesLocked(lo, hi Index) []LogEntry {
 	if lo >= hi {
 		return nil
@@ -54,8 +42,7 @@ func (rf *Raft) entriesLocked(lo, hi Index) []LogEntry {
 	return slices.Clone(rf.log[lo:hi])
 }
 
-// firstIndexOfTermLocked returns the first index of the run of entries that
-// has the same term as the entry at i (i >= 1).
+// Ищем начало участка с тем же term для ответа о конфликте.
 func (rf *Raft) firstIndexOfTermLocked(i Index) Index {
 	term := rf.termAtLocked(i)
 	for i > 1 && rf.termAtLocked(i-1) == term {
@@ -64,8 +51,7 @@ func (rf *Raft) firstIndexOfTermLocked(i Index) Index {
 	return i
 }
 
-// lastIndexOfTermLocked returns the last index of an entry of the given
-// term, if the log has one. Terms never decrease along the log.
+// Ищем последнюю запись указанного term для возврата к общему префиксу.
 func (rf *Raft) lastIndexOfTermLocked(term Term) (Index, bool) {
 	for i := rf.lastLogIndexLocked(); i > 0; i-- {
 		switch t := rf.termAtLocked(i); {
@@ -78,9 +64,7 @@ func (rf *Raft) lastIndexOfTermLocked(term Term) (Index, bool) {
 	return 0, false
 }
 
-// storeLogLocked makes entries durable in place of the log from index from
-// on, and only then adopts them in memory, so a failed write leaves the log
-// unchanged: a node must not acknowledge entries a restart would lose.
+// Заменяем суффикс с позиции from: сначала в Storage, затем в рабочем логе.
 func (rf *Raft) storeLogLocked(from Index, entries []LogEntry) error {
 	if from == 0 || from > rf.lastLogIndexLocked()+1 {
 		rf.fatalf("storing entries from index %d, but the log ends at %d", from, rf.lastLogIndexLocked())
@@ -93,9 +77,7 @@ func (rf *Raft) storeLogLocked(from Index, entries []LogEntry) error {
 	return nil
 }
 
-// checkEntries reports why entries could not follow an entry of term prev in
-// a log whose terms are at most maxTerm: terms start at 1 and never decrease
-// along a log (§5.3).
+// Проверяем вид записей и неубывающий порядок term в допустимых границах.
 func checkEntries(prev Term, entries []LogEntry, maxTerm Term) error {
 	for i, e := range entries {
 		switch {

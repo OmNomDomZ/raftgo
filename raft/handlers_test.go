@@ -22,9 +22,6 @@ func TestHandleRequestVote_GrantsWhenNoVoteYet(t *testing.T) {
 }
 
 func TestHandleRequestVote_InvalidArgsGetNoReply(t *testing.T) {
-	// votedFor=="" means "no vote", so a grant to "" would not stop a second
-	// vote in the same term. No correct candidate campaigns in term 0 or
-	// sends RPCs to itself.
 	rf, st := newTestNode(t, "A", "B", "C")
 
 	invalid := []*RequestVoteArgs{
@@ -48,8 +45,6 @@ func TestHandleRequestVote_InvalidArgsGetNoReply(t *testing.T) {
 }
 
 func TestHandleAppendEntries_InvalidArgsGetNoReply(t *testing.T) {
-	// No correct leader has term 0 or sends RPCs to itself; acknowledging
-	// such a "leader" would also hold back elections.
 	rf, st := newTestNode(t, "A", "B")
 
 	invalid := []*AppendEntriesArgs{
@@ -100,7 +95,6 @@ func TestHandleRequestVote_RejectsSecondVoteInSameTerm(t *testing.T) {
 }
 
 func TestHandleRequestVote_GrantsSameCandidateAgain(t *testing.T) {
-	// A retried RequestVote must not be rejected (Figure 2: votedFor == candidateId).
 	rf, _ := newTestNode(t, "A", "B")
 	mustHandleRequestVote(t, rf, &RequestVoteArgs{Term: 1, CandidateID: "B"})
 
@@ -130,8 +124,6 @@ func TestHandleRequestVote_HigherTermStepsDownAndGrants(t *testing.T) {
 }
 
 func TestHandleRequestVote_PersistFailureSendsNoReply(t *testing.T) {
-	// A vote that is not durable must not be granted, and a refusal would be
-	// a lie too, so the node answers nothing.
 	rf, st := newTestNode(t, "A", "B")
 	st.setFailSave(true)
 
@@ -189,7 +181,6 @@ func TestHandleAppendEntries_HigherTermStepsDownLeader(t *testing.T) {
 }
 
 func TestRestart_RestoresTermAndVote(t *testing.T) {
-	// A restarted node must not vote twice in one term (§5.1, Figure 2).
 	rf, st := newTestNode(t, "A", "B", "C")
 	if !mustHandleRequestVote(t, rf, &RequestVoteArgs{Term: 4, CandidateID: "B"}).VoteGranted {
 		t.Fatalf("setup: expected vote for B granted")
@@ -222,9 +213,6 @@ func TestHandleRequestVote_RetryDoesNotRewriteStorage(t *testing.T) {
 }
 
 func TestHandleAppendEntries_SecondLeaderInTermGetsNoReply(t *testing.T) {
-	// Election Safety is already broken if this happens, but a message from
-	// the network must not crash the node. Success=false would read as a log
-	// mismatch (§5.3), so there must be no reply at all.
 	rf, _ := newTestNode(t, "A", "B", "C")
 	setRoleAndTerm(rf, Leader, 3, "A")
 
@@ -252,7 +240,6 @@ func TestLeaderHint_FollowsAppendEntriesAndTerms(t *testing.T) {
 		t.Fatalf("Start on a follower: %v, want a NotLeaderError naming B", err)
 	}
 
-	// A deposed leader of an earlier term is not followed.
 	if reply := mustHandleAppendEntries(t, rf, &AppendEntriesArgs{Term: 1, LeaderID: "C"}); reply.Success {
 		t.Fatalf("stale AppendEntries accepted: %+v", reply)
 	}
@@ -260,7 +247,6 @@ func TestLeaderHint_FollowsAppendEntriesAndTerms(t *testing.T) {
 		t.Fatalf("after a stale AppendEntries from C: leader %q, want B", got)
 	}
 
-	// B led term 2 only; nobody is known to lead term 3 yet.
 	mustHandleRequestVote(t, rf, &RequestVoteArgs{Term: 3, CandidateID: "C"})
 	if got := rf.Leader(); got != "" {
 		t.Fatalf("after moving to term 3: leader %q, want none", got)

@@ -6,15 +6,12 @@ import (
 	"time"
 )
 
-// succeedingPeer acknowledges every AppendEntries in the request's term.
 func succeedingPeer() replyingPeer {
 	return replyingPeer{func(args *AppendEntriesArgs) *AppendEntriesReply {
 		return &AppendEntriesReply{Term: args.Term, Success: true}
 	}}
 }
 
-// newTestLeader returns node A leading term with log entries and
-// commitIndex commit, with peers B and C answering through succeedingPeer.
 func newTestLeader(t *testing.T, term Term, commit Index, entries ...LogEntry) *Raft {
 	t.Helper()
 	rf, _ := newTestNode(t, "A", "B", "C")
@@ -29,7 +26,6 @@ func newTestLeader(t *testing.T, term Term, commit Index, entries ...LogEntry) *
 	return rf
 }
 
-// replicateTo sends peer the AppendEntries its replicator would send next.
 func replicateTo(rf *Raft, peer NodeID) {
 	rf.mu.Lock()
 	args := rf.appendEntriesArgsLocked(peer)
@@ -65,7 +61,6 @@ func TestCheckQuorum_LeaderWithQuorumStays(t *testing.T) {
 	if role, term := roleAndTerm(rf); role != Leader || term != 2 {
 		t.Fatalf("leader with a quorum became %v in term %d", role, term)
 	}
-	// Each check needs fresh answers.
 	if heard != 0 {
 		t.Fatalf("quorum check kept %d answers for the next check", heard)
 	}
@@ -79,7 +74,7 @@ func TestCheckQuorum_LeaderWithQuorumStays(t *testing.T) {
 }
 
 func TestCheckQuorum_RejectionInOurTermCounts(t *testing.T) {
-	// A log mismatch is still an answer in this leader's term.
+	// Конфликт лога не отменяет факт ответа соседа в текущем term.
 	rf := newTestLeader(t, 2, 1, entriesOfTerms(2)...)
 	rf.transport.(*fakeTransport).register("B", replyingPeer{func(args *AppendEntriesArgs) *AppendEntriesReply {
 		return &AppendEntriesReply{Term: args.Term, ConflictIndex: 1}
@@ -102,8 +97,6 @@ func TestCheckQuorum_RunsOnLeaderElectionTimeout(t *testing.T) {
 
 	rf.clock.(*fakeClock).Advance(2 * time.Second)
 	rf.onElectionTimeout(context.Background())
-	// No answers, so the leader steps down, but it must not start an
-	// election from the same timeout.
 	if role, term := roleAndTerm(rf); role != Follower || term != 2 {
 		t.Fatalf("expected Follower in term 2, got %v in term %d", role, term)
 	}

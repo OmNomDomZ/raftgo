@@ -10,17 +10,13 @@ import (
 	"time"
 )
 
-// applyLog records what every node sends on ApplyCh. Anything applied by
-// some node is committed, which is what the checks below rely on.
+// applyLog проверяет одинаковое применение подтверждённых записей на всех узлах.
 type applyLog struct {
-	t  *testing.T
-	mu sync.Mutex
-	// committed includes no-ops and checks the entire index/term/kind identity.
+	t         *testing.T
+	mu        sync.Mutex
 	committed map[Index]LogEntry
-	// gens counts each node's incarnations, so a message a crashed
-	// incarnation sent is not attributed to the restarted one.
-	gens []int
-	// nodes and last are per node, for its current incarnation.
+	// Отличаем сообщения старого экземпляра узла от сообщений после перезапуска.
+	gens  []int
 	nodes []map[Index][]byte
 	last  []Index
 }
@@ -35,7 +31,6 @@ func newApplyLog(t *testing.T, n int) *applyLog {
 	}
 }
 
-// restart starts a new incarnation of node i, which applies from scratch.
 func (l *applyLog) restart(i int) int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -45,16 +40,13 @@ func (l *applyLog) restart(i int) int {
 	return l.gens[i]
 }
 
-// record is called from the collector goroutines, so it reports violations
-// with Errorf rather than Fatalf.
 func (l *applyLog) record(i, gen int, msg ApplyMsg) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if gen != l.gens[i] {
 		return
 	}
-	// Without gaps, so a state machine can tell when it has applied through
-	// any committed index, including a no-op.
+	// Проверяем применение без пропусков индекса, включая no-op.
 	if msg.Index != l.last[i]+1 {
 		l.t.Errorf("node %d applied index %d after index %d", i, msg.Index, l.last[i])
 	}
@@ -69,8 +61,6 @@ func (l *applyLog) record(i, gen int, msg ApplyMsg) {
 	}
 }
 
-// checkLeaderCompleteness checks that a new leader's log holds every entry
-// committed so far (§5.4).
 func (l *applyLog) checkLeaderCompleteness(id NodeID, term Term, log []LogEntry) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -82,8 +72,6 @@ func (l *applyLog) checkLeaderCompleteness(id NodeID, term Term, log []LogEntry)
 	}
 }
 
-// count returns how many nodes have applied cmd at index in their current
-// incarnation.
 func (l *applyLog) count(index Index, cmd string) int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -96,16 +84,12 @@ func (l *applyLog) count(index Index, cmd string) int {
 	return n
 }
 
-// lastApplied returns the last index node i has applied in its current
-// incarnation.
 func (l *applyLog) lastApplied(i int) Index {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.last[i]
 }
 
-// appliedCommands returns what node i has applied in its current
-// incarnation, in index order.
 func (l *applyLog) appliedCommands(i int) []string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -126,9 +110,7 @@ type leaderLog struct {
 	log  []LogEntry
 }
 
-// checkLogs checks Log Matching between every pair of nodes and Leader
-// Append-Only for every leader (§5.3, Figure 3). step calls it after every
-// tick, so every cluster test checks both.
+// Проверяем совпадение префиксов логов и неизменность лога действующего лидера.
 func (c *testCluster) checkLogs() {
 	c.t.Helper()
 	type snapshot struct {
@@ -146,8 +128,6 @@ func (c *testCluster) checkLogs() {
 
 	for i, a := range snaps {
 		for _, b := range snaps[i+1:] {
-			// If the logs agree on the term at some index, they must agree
-			// on everything up to it; the highest such index covers the rest.
 			for k := min(len(a.log), len(b.log)) - 1; k > 0; k-- {
 				if a.log[k].Term != b.log[k].Term {
 					continue
@@ -174,17 +154,13 @@ func (c *testCluster) checkLogs() {
 	}
 }
 
-// waitLeader runs the cluster until exactly one live node is leader.
 func (c *testCluster) waitLeader(t *testing.T) *Raft {
 	t.Helper()
 	c.advanceUntil(t, 5*time.Second, func() bool { return len(c.leaders()) == 1 })
 	return c.leaders()[0]
 }
 
-// one submits cmd to whichever live, connected node accepts it, and waits
-// until at least want nodes have applied it at the index it got. If the
-// leader loses its term first, it submits again. A cut-off leader is skipped:
-// it would accept cmd but could never commit it.
+// Предлагаем команду доступному лидеру и ждём её применения нужным числом узлов.
 func (c *testCluster) one(t *testing.T, cmd string, want int) Index {
 	t.Helper()
 	const attempt = 2 * time.Second
@@ -233,8 +209,6 @@ func TestCluster_BasicAgreement(t *testing.T) {
 		c := newTestCluster(t, 3)
 		c.waitLeader(t)
 
-		// The core preserves an ordered list of opaque strings, including
-		// empty/duplicate strings and text resembling higher-level commands.
 		want := []string{"", "строка 🛶", "строка 🛶", "SET x 1", "opaque:payload:{}"}
 		var prev Index
 		for k, cmd := range want {
@@ -253,17 +227,13 @@ func TestCluster_BasicAgreement(t *testing.T) {
 }
 
 func TestCluster_NoOpCommitsEntriesOfEarlierTerms(t *testing.T) {
-	// A command stored on a majority but not known to be committed when its
-	// leader crashes must be committed by the next leader's no-op, without
-	// waiting for another client command (§8).
 	synctest.Test(t, func(t *testing.T) {
 		c := newTestCluster(t, 3)
 		leader := c.waitLeader(t)
 		l := slices.Index(c.nodes, leader)
 		stored, missed := (l+1)%3, (l+2)%3
 
-		// Only one follower gets the entry, in an AppendEntries sent before
-		// the leader commits it, so no follower learns that it is committed.
+		// Запись есть на большинстве, но followers ещё не знают, что она подтверждена.
 		c.tr.setPartitioned(c.ids[missed], true)
 		index, _, err := leader.Start([]byte("x"))
 		if err != nil {
@@ -276,8 +246,6 @@ func TestCluster_NoOpCommitsEntriesOfEarlierTerms(t *testing.T) {
 			t.Fatalf("setup: follower applied %q before the leader crashed", got)
 		}
 
-		// Only the follower holding the entry can win (§5.4.1), and it must
-		// commit the entry through its no-op.
 		c.advanceUntil(t, 5*time.Second, func() bool {
 			return c.applied.count(index, "x") >= 2 &&
 				slices.Equal(c.applied.appliedCommands(stored), []string{"x"}) &&
@@ -297,7 +265,6 @@ func TestCluster_AgreementDespiteFollowerFailure(t *testing.T) {
 
 		f := c.followerOf(leader)
 		c.tr.setPartitioned(c.ids[f], true)
-		// More than one MaxEntriesPerRPC batch, so catching up takes several.
 		for k := range 3 * defaultMaxEntriesPerRPC {
 			c.one(t, fmt.Sprint("during", k), 2)
 		}
@@ -395,7 +362,6 @@ func TestCluster_PartitionedLeaderRejoinsAndDropsUncommittedEntries(t *testing.T
 		leader1 := c.waitLeader(t)
 		c.one(t, "a", 3)
 
-		// Cut off, leader1 accepts entries it can never commit.
 		c.tr.setPartitioned(leader1.id, true)
 		var stale []Index
 		for k := range 3 {
@@ -408,7 +374,6 @@ func TestCluster_PartitionedLeaderRejoinsAndDropsUncommittedEntries(t *testing.T
 		c.advanceUntil(t, 5*time.Second, func() bool { return c.leaderOtherThan(leader1) != nil })
 		c.one(t, "b", 2)
 
-		// Now the second leader is cut off, and leader1 rejoins the third node.
 		leader2 := c.leaderOtherThan(leader1)
 		if leader2 == nil {
 			t.Fatalf("no leader besides %s after committing b", leader1.id)
@@ -428,8 +393,6 @@ func TestCluster_PartitionedLeaderRejoinsAndDropsUncommittedEntries(t *testing.T
 }
 
 func TestCluster_ConflictTermSkipsDivergentTermsQuickly(t *testing.T) {
-	// A follower with a long run of conflicting entries is repaired in a
-	// few round trips rather than one per entry (§5.3).
 	synctest.Test(t, func(t *testing.T) {
 		c := newTestCluster(t, 3)
 		old := c.waitLeader(t)
@@ -445,8 +408,6 @@ func TestCluster_ConflictTermSkipsDivergentTermsQuickly(t *testing.T) {
 		for k := range 50 {
 			c.one(t, fmt.Sprint("new", k), 2)
 		}
-		// A leader elected now starts with nextIndex past all 50 new entries,
-		// so it has to back off over old's whole conflicting run.
 		leader2 := c.leaderOtherThan(old)
 		if leader2 == nil {
 			t.Fatalf("no leader besides %s after committing new entries", old.id)
@@ -468,8 +429,7 @@ func TestCluster_ConflictTermSkipsDivergentTermsQuickly(t *testing.T) {
 		c.tr.setPartitioned(old.id, false)
 		i := slices.Index(c.nodes, old)
 		c.advanceUntil(t, 5*time.Second, func() bool { return len(c.applied.appliedCommands(i)) == 51 })
-		// Repair takes about three: a mismatch past old's log, one on the
-		// stale term, then the match. One per entry would take over 50.
+		// Поиск по term должен исправить хвост за несколько RPC, а не по одной записи.
 		if n := c.tr.appendEntriesTo(old.id) - before; n > 10 {
 			t.Fatalf("repairing a 50-entry conflict took %d AppendEntries", n)
 		}
@@ -501,11 +461,7 @@ func TestCluster_RestartReappliesCommittedEntries(t *testing.T) {
 	})
 }
 
-// TestCluster_LeaderChurnKeepsSafety keeps crashing leaders at random
-// moments, often before a heartbeat has carried their latest entries to
-// every follower, so leaders of later terms inherit logs replicated to only
-// part of the cluster. That is where committing an entry of an earlier term
-// by counting replicas would break State Machine Safety (§5.4.2, Figure 8).
+// Частая смена лидеров не должна менять подтверждённые записи.
 func TestCluster_LeaderChurnKeepsSafety(t *testing.T) {
 	for seed := range uint64(10) {
 		t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {
@@ -530,7 +486,6 @@ func TestCluster_LeaderChurnKeepsSafety(t *testing.T) {
 							down = append(down, i)
 						}
 					}
-					// Keep a quorum up so the cluster can still make progress.
 					if len(down) > 0 && (len(down) > n/2 || r.Float64() < 0.3) {
 						c.start(down[r.IntN(len(down))])
 					}

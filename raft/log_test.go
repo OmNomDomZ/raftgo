@@ -11,12 +11,10 @@ import (
 	"testing/synctest"
 )
 
-// cmdEntry is a command entry whose command is its own name.
 func cmdEntry(term Term, cmd string) LogEntry {
 	return LogEntry{Term: term, Kind: EntryCommand, Command: []byte(cmd)}
 }
 
-// entriesOfTerms returns one command entry per term.
 func entriesOfTerms(terms ...Term) []LogEntry {
 	entries := make([]LogEntry, len(terms))
 	for i, term := range terms {
@@ -25,7 +23,6 @@ func entriesOfTerms(terms ...Term) []LogEntry {
 	return entries
 }
 
-// setLog replaces rf's log, in storage and in memory, with entries.
 func setLog(t *testing.T, rf *Raft, entries ...LogEntry) {
 	t.Helper()
 	rf.mu.Lock()
@@ -36,7 +33,6 @@ func setLog(t *testing.T, rf *Raft, entries ...LogEntry) {
 	}
 }
 
-// logTerms returns the terms of rf's in-memory log, without the sentinel.
 func logTerms(rf *Raft) []Term {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -65,10 +61,7 @@ func commitIndex(rf *Raft) Index {
 	return rf.commitIndex
 }
 
-// --- RequestVote: election restriction (§5.4.1) ---
-
 func TestHandleRequestVote_RequiresUpToDateLog(t *testing.T) {
-	// Our log ends with an entry of term 2 at index 3.
 	tests := []struct {
 		name      string
 		lastIndex Index
@@ -94,7 +87,6 @@ func TestHandleRequestVote_RequiresUpToDateLog(t *testing.T) {
 			if reply.VoteGranted != tt.grant {
 				t.Fatalf("expected VoteGranted=%v, got %+v", tt.grant, reply)
 			}
-			// The candidate's term is adopted either way (§5.1).
 			if _, term := roleAndTerm(rf); term != 4 || reply.Term != 4 {
 				t.Fatalf("expected term 4 adopted, got node term %d, reply term %d", term, reply.Term)
 			}
@@ -106,8 +98,6 @@ func TestHandleRequestVote_RequiresUpToDateLog(t *testing.T) {
 }
 
 func TestHandleRequestVote_DenialForStaleLogDoesNotResetTimer(t *testing.T) {
-	// A candidate that cannot win must not hold off our own election, or a
-	// node with a stale log could keep the cluster leaderless.
 	rf, _ := newTestNode(t, "A", "B", "C")
 	setLog(t, rf, entriesOfTerms(1)...)
 	setRoleAndTerm(rf, Follower, 1, "")
@@ -122,17 +112,15 @@ func TestHandleRequestVote_DenialForStaleLogDoesNotResetTimer(t *testing.T) {
 func TestHandleRequestVote_RejectsInvalidLastLogEntry(t *testing.T) {
 	rf, _ := newTestNode(t, "A", "B")
 	for _, args := range []*RequestVoteArgs{
-		{Term: 2, CandidateID: "B", LastLogIndex: 1, LastLogTerm: 3}, // log term above own term
-		{Term: 2, CandidateID: "B", LastLogIndex: 1, LastLogTerm: 0}, // real entry of term 0
-		{Term: 2, CandidateID: "B", LastLogIndex: 0, LastLogTerm: 1}, // sentinel with a term
+		{Term: 2, CandidateID: "B", LastLogIndex: 1, LastLogTerm: 3},
+		{Term: 2, CandidateID: "B", LastLogIndex: 1, LastLogTerm: 0},
+		{Term: 2, CandidateID: "B", LastLogIndex: 0, LastLogTerm: 1},
 	} {
 		if reply, err := rf.HandleRequestVote(args); !errors.Is(err, ErrInvalidArgs) || reply != nil {
 			t.Fatalf("HandleRequestVote(%+v) = %+v, %v; want ErrInvalidArgs", args, reply, err)
 		}
 	}
 }
-
-// --- AppendEntries receiver (Figure 2, §5.3) ---
 
 func TestHandleAppendEntries_PrevEntryMissing(t *testing.T) {
 	rf, _ := newTestNode(t, "A", "B", "C")
@@ -203,9 +191,7 @@ func TestHandleAppendEntries_TruncatesConflictingSuffix(t *testing.T) {
 }
 
 func TestHandleAppendEntries_StaleRequestDoesNotTruncate(t *testing.T) {
-	// A delayed AppendEntries carries a prefix of what the follower already
-	// has. Truncating after it would drop entries the leader may have
-	// counted towards a commit.
+	// Задержанный короткий запрос не должен усекать ранее принятый хвост.
 	rf, st := newTestNode(t, "A", "B", "C")
 	setRoleAndTerm(rf, Follower, 2, "")
 	setLog(t, rf, entriesOfTerms(1, 2, 2, 2)...)
@@ -226,8 +212,7 @@ func TestHandleAppendEntries_StaleRequestDoesNotTruncate(t *testing.T) {
 }
 
 func TestHandleAppendEntries_CommitIndexCoversOnlyVerifiedEntries(t *testing.T) {
-	// Entries past the request are not known to match the leader's log, so
-	// the leader's commit index must not reach them (Figure 2).
+	// Commit не должен выходить за участок лога, проверенный запросом.
 	rf, _ := newTestNode(t, "A", "B", "C")
 	setRoleAndTerm(rf, Follower, 2, "")
 	setLog(t, rf, entriesOfTerms(1, 1, 1, 1)...)
@@ -239,7 +224,6 @@ func TestHandleAppendEntries_CommitIndexCoversOnlyVerifiedEntries(t *testing.T) 
 		t.Fatalf("commit index %d, want 2", got)
 	}
 
-	// An older request never moves the commit index back.
 	mustHandleAppendEntries(t, rf, &AppendEntriesArgs{Term: 2, LeaderID: "B", LeaderCommit: 1})
 	if got := commitIndex(rf); got != 2 {
 		t.Fatalf("commit index moved back to %d", got)
@@ -247,7 +231,6 @@ func TestHandleAppendEntries_CommitIndexCoversOnlyVerifiedEntries(t *testing.T) 
 }
 
 func TestHandleAppendEntries_StorageFailureGivesNoReply(t *testing.T) {
-	// Success would tell the leader the entries are durable.
 	rf, st := newTestNode(t, "A", "B", "C")
 	setRoleAndTerm(rf, Follower, 2, "")
 	setLog(t, rf, entriesOfTerms(1, 1)...)
@@ -289,22 +272,20 @@ func TestHandleAppendEntries_RefusesToOverwriteCommittedEntry(t *testing.T) {
 func TestHandleAppendEntries_RejectsInvalidLog(t *testing.T) {
 	rf, _ := newTestNode(t, "A", "B")
 	for _, args := range []*AppendEntriesArgs{
-		{Term: 2, LeaderID: "B", PrevLogIndex: 1, PrevLogTerm: 3},                             // prev term above own term
-		{Term: 2, LeaderID: "B", PrevLogIndex: 1, PrevLogTerm: 0},                             // real entry of term 0
-		{Term: 2, LeaderID: "B", PrevLogIndex: 0, PrevLogTerm: 1},                             // sentinel with a term
-		{Term: 2, LeaderID: "B", Entries: entriesOfTerms(3)},                                  // entry above own term
-		{Term: 2, LeaderID: "B", Entries: entriesOfTerms(2, 1)},                               // decreasing terms
-		{Term: 2, LeaderID: "B", PrevLogIndex: 1, PrevLogTerm: 2, Entries: entriesOfTerms(1)}, // below prev term
-		{Term: 2, LeaderID: "B", Entries: entriesOfTerms(0)},                                  // entry of term 0
-		{Term: 2, LeaderID: "B", Entries: []LogEntry{{Term: 1, Kind: 7}}},                     // unknown kind
+		{Term: 2, LeaderID: "B", PrevLogIndex: 1, PrevLogTerm: 3},
+		{Term: 2, LeaderID: "B", PrevLogIndex: 1, PrevLogTerm: 0},
+		{Term: 2, LeaderID: "B", PrevLogIndex: 0, PrevLogTerm: 1},
+		{Term: 2, LeaderID: "B", Entries: entriesOfTerms(3)},
+		{Term: 2, LeaderID: "B", Entries: entriesOfTerms(2, 1)},
+		{Term: 2, LeaderID: "B", PrevLogIndex: 1, PrevLogTerm: 2, Entries: entriesOfTerms(1)},
+		{Term: 2, LeaderID: "B", Entries: entriesOfTerms(0)},
+		{Term: 2, LeaderID: "B", Entries: []LogEntry{{Term: 1, Kind: 7}}},
 	} {
 		if reply, err := rf.HandleAppendEntries(args); !errors.Is(err, ErrInvalidArgs) || reply != nil {
 			t.Fatalf("HandleAppendEntries(%+v) = %+v, %v; want ErrInvalidArgs", args, reply, err)
 		}
 	}
 }
-
-// --- Leader: Start, commitment and log repair ---
 
 func TestStart_OnlyOnLeader(t *testing.T) {
 	rf, _ := newTestNode(t, "A", "B", "C")
@@ -354,8 +335,6 @@ func TestBecomeLeader_AppendsNoOp(t *testing.T) {
 }
 
 func TestBecomeLeader_NoOpPersistFailureStaysCandidate(t *testing.T) {
-	// A leader whose own log is not durable could count entries towards a
-	// commit that a restart would lose.
 	rf, st := newTestNode(t, "A", "B", "C")
 	setRoleAndTerm(rf, Candidate, 2, "A")
 	st.setFailSave(true)
@@ -373,9 +352,7 @@ func TestBecomeLeader_NoOpPersistFailureStaysCandidate(t *testing.T) {
 }
 
 func TestAdvanceCommit_OnlyCountsReplicasOfCurrentTerm(t *testing.T) {
-	// Figure 8: an entry of an earlier term stored on a majority can still
-	// be overwritten by a leader that lacks it, so it is only committed
-	// together with an entry of the current term (§5.4.2).
+	// Запись старого term подтверждается только вместе с записью текущего term.
 	rf, _ := newTestNode(t, "A", "B", "C", "D", "E")
 	setRoleAndTerm(rf, Leader, 4, "A")
 	setLog(t, rf, cmdEntry(1, "a"), cmdEntry(2, "b"), cmdEntry(4, "c"))
@@ -401,7 +378,6 @@ func TestAdvanceCommit_OnlyCountsReplicasOfCurrentTerm(t *testing.T) {
 	}
 }
 
-// replyingPeer answers AppendEntries with reply(args).
 type replyingPeer struct {
 	reply func(*AppendEntriesArgs) *AppendEntriesReply
 }
@@ -415,18 +391,14 @@ func (p replyingPeer) HandleAppendEntries(args *AppendEntriesArgs) (*AppendEntri
 }
 
 func TestSendAppendEntries_BacksOffOverConflictingTerm(t *testing.T) {
-	// Leader log terms: 1 1 1 4 4 5 5 6 6 6.
 	leaderLog := entriesOfTerms(1, 1, 1, 4, 4, 5, 5, 6, 6, 6)
 	tests := []struct {
 		name  string
 		reply AppendEntriesReply
 		next  Index
 	}{
-		// Follower has none of term 4 past index 3: skip to what we have.
 		{"follower log shorter", AppendEntriesReply{Term: 6, ConflictIndex: 4}, 4},
-		// Follower has term 2, which we lack: skip its whole run.
 		{"term leader lacks", AppendEntriesReply{Term: 6, ConflictTerm: 2, ConflictIndex: 2}, 2},
-		// Follower has term 5, which we have: continue after our last of it.
 		{"term leader has", AppendEntriesReply{Term: 6, ConflictTerm: 5, ConflictIndex: 6}, 8},
 	}
 	for _, tt := range tests {
@@ -511,7 +483,7 @@ func TestSendAppendEntries_BrokenPeerLoggedOncePerTerm(t *testing.T) {
 	markRunning(rf)
 	setLog(t, rf, entriesOfTerms(2, 2, 2)...)
 	setRoleAndTerm(rf, Leader, 2, "A")
-	// B rejects a prefix it has already matched, which no correct peer does.
+	// Сосед не должен отвергать префикс, который уже подтвердил в этом term.
 	rf.transport.(*fakeTransport).register("B", replyingPeer{func(args *AppendEntriesArgs) *AppendEntriesReply {
 		return &AppendEntriesReply{Term: args.Term, ConflictIndex: 1}
 	}})
@@ -539,20 +511,17 @@ func TestSendAppendEntries_BrokenPeerLoggedOncePerTerm(t *testing.T) {
 func TestAppendEntriesReply_InvalidConflictIsAFailedRPC(t *testing.T) {
 	args := &AppendEntriesArgs{Term: 2, LeaderID: "A", PrevLogIndex: 3, PrevLogTerm: 1}
 	for _, reply := range []*AppendEntriesReply{
-		{Term: 2, ConflictIndex: 0}, // index 0 always matches
-		{Term: 2, ConflictIndex: 4}, // past PrevLogIndex: no backing off
+		{Term: 2, ConflictIndex: 0},
+		{Term: 2, ConflictIndex: 4},
 	} {
 		if err := checkAppendEntriesReply(args, reply); !errors.Is(err, errInvalidReply) {
 			t.Fatalf("checkAppendEntriesReply(%+v) = %v, want errInvalidReply", reply, err)
 		}
 	}
-	// A rejection from a later term carries no conflict information.
 	if err := checkAppendEntriesReply(args, &AppendEntriesReply{Term: 3}); err != nil {
 		t.Fatalf("rejection from a later term: %v", err)
 	}
 }
-
-// --- Restart and apply ---
 
 func TestNew_RestoresLog(t *testing.T) {
 	rf, st := newTestNode(t, "A", "B", "C")
@@ -605,7 +574,6 @@ func TestApply_SendsEveryCommittedEntryInOrder(t *testing.T) {
 		_, stop := runNode(rf)
 		defer stop()
 
-		// A single node wins its election, and commits alone.
 		for {
 			if _, isLeader := rf.GetState(); isLeader {
 				break
@@ -619,8 +587,7 @@ func TestApply_SendsEveryCommittedEntryInOrder(t *testing.T) {
 			}
 		}
 
-		// Index 1 is the no-op of the election. It is sent too, so the state
-		// machine learns that it has applied through index 1.
+		// No-op тоже передаётся в ApplyCh, чтобы не было пропуска индекса.
 		want := []ApplyMsg{
 			{Index: 1, Term: 1, Kind: EntryNoOp},
 			{Index: 2, Term: 1, Kind: EntryCommand, Command: []byte("a")},

@@ -1,4 +1,4 @@
-// Package storage implements safe in-memory storage for Raft nodes.
+// Package storage хранит состояние узлов в RAM.
 package storage
 
 import (
@@ -8,10 +8,7 @@ import (
 	"raftgo/raft"
 )
 
-// Memory stores one node's state and log in RAM. Its zero value is ready for
-// use. A simulated node restart must reuse the same Memory; a new instance
-// represents a fresh node, not recovery after process termination.
-// Memory must not be copied after first use.
+// Memory хранит term, голос и лог в RAM; при перезапуске тестового узла нужен тот же объект.
 type Memory struct {
 	mu    sync.Mutex
 	state raft.PersistentState
@@ -45,8 +42,7 @@ func (m *Memory) StoreLog(from raft.Index, entries []raft.LogEntry) error {
 	if from == 0 || from > raft.Index(len(m.log))+1 {
 		return fmt.Errorf("invalid log index %d", from)
 	}
-	// Allocate the replacement before publishing it, including both levels of
-	// input slices. A rejected index leaves the entire stored log unchanged.
+	// Копируем префикс и новые записи, чтобы хранилище не зависело от чужих срезов.
 	m.log = append(cloneLog(m.log[:from-1]), cloneLog(entries)...)
 	return nil
 }

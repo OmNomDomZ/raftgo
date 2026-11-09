@@ -2,11 +2,7 @@ package raft
 
 import "context"
 
-// Run drives the node until ctx is done, then waits for its in-flight RPCs to
-// finish. It must be called exactly once, after New; until then the RPC
-// handlers return ErrNotStarted. Once ctx is done the node is stopped for
-// good: it reports itself as a non-leader and its RPC handlers return
-// ErrStopped.
+// Run один раз запускает таймеры, репликацию и apply; при отмене ждёт завершения горутин.
 func (rf *Raft) Run(ctx context.Context) {
 	rf.mu.Lock()
 	if rf.started {
@@ -29,8 +25,6 @@ func (rf *Raft) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			// Under mu, so no handler can re-arm a timer after they are stopped:
-			// handlers see stoppedLocked once mu is released.
 			rf.mu.Lock()
 			rf.electionTimer.Stop()
 			rf.heartbeatTimer.Stop()

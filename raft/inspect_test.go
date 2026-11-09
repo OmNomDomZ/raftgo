@@ -26,8 +26,6 @@ func TestInspectLogCannotMutateCommittedHistory(t *testing.T) {
 	}
 }
 
-// A duplicate grant must not invent quorum, and grants left in memory after
-// stepping down must not appear as the new leader's election history.
 func TestElectionStatusDuplicateGrantsAndStepdown(t *testing.T) {
 	rf, _ := newTestNode(t, "A", "B", "C", "D", "E")
 	tr := rf.transport.(*fakeTransport)

@@ -44,7 +44,7 @@ func TestEntriesFixedForwarding(t *testing.T) {
 	defer follower.Close()
 	members := []Member{{ID: "local"}, {ID: "leader", APIURL: "http://public-leader.invalid", InternalAPIURL: leader.URL}, {ID: "follower", APIURL: "http://public-follower.invalid", InternalAPIURL: follower.URL}}
 	h := forwardingAPI(t, members).Handler()
-	// Handler targets are a snapshot, not caller-controlled data.
+	// Изменение исходного списка участников не должно менять разрешённые адреса.
 	members[1].APIURL = outsider.URL
 	members[1].InternalAPIURL = outsider.URL
 	request := func(method, path string) *httptest.ResponseRecorder {

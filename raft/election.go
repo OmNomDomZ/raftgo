@@ -12,8 +12,7 @@ func (rf *Raft) onElectionTimeout(ctx context.Context) {
 	if rf.stoppedLocked() {
 		return
 	}
-	// Run may have received the tick while a handler held mu and re-armed the
-	// timer, e.g. on a heartbeat from a live leader. The tick is then stale.
+	// Игнорируем старый сигнал, если таймер уже перевзведён.
 	if rf.clock.Now().Before(rf.electionDeadline) {
 		return
 	}
@@ -24,10 +23,9 @@ func (rf *Raft) onElectionTimeout(ctx context.Context) {
 	rf.startElectionLocked(ctx)
 }
 
-// startElectionLocked starts an election for currentTerm+1 (§5.2).
+// Начинаем новый term, голосуем за себя и запрашиваем голоса соседей.
 func (rf *Raft) startElectionLocked(ctx context.Context) {
-	// Reset before persisting: if persistence fails, the timer must still be
-	// armed so the election is retried later.
+	// Следующая попытка выборов нужна и при ошибке сохранения.
 	rf.resetElectionTimerLocked()
 
 	st := rf.persistentStateLocked()
@@ -91,9 +89,7 @@ func (rf *Raft) requestVote(ctx context.Context, peer NodeID, args *RequestVoteA
 	}
 }
 
-// checkVoteReply rejects replies no correct peer sends. A receiver adopts a
-// higher request term before answering, so its reply term is never lower,
-// and it only grants votes in the request's term (Figure 2).
+// Проверяем, что ответ относится к допустимому term голосования.
 func checkVoteReply(args *RequestVoteArgs, reply *RequestVoteReply) error {
 	switch {
 	case reply == nil:

@@ -20,8 +20,7 @@ func TestSendAppendEntries_LostReplyRetriesStoredEntry(t *testing.T) {
 	args := leader.appendEntriesArgsLocked("B")
 	leader.mu.Unlock()
 
-	// Deliver the request, then lose only its reply. The follower has stored
-	// it, but the leader must not count the missing acknowledgement.
+	// Follower сохраняет запись, но ответ теряется; лидер не должен учесть подтверждение.
 	calls := 0
 	tr.setDrop(func() bool { calls++; return calls == 2 })
 	if leader.sendAppendEntries(context.Background(), "B", args) {
@@ -48,8 +47,7 @@ func TestSendAppendEntries_LostReplyRetriesStoredEntry(t *testing.T) {
 		t.Fatalf("retry changed the command or its position: %+v", log)
 	}
 
-	// A delayed duplicate before the commit announcement cannot retract the
-	// commit or truncate an already acknowledged prefix.
+	// Повторный запрос не должен усечь лог или уменьшить commitIndex.
 	mustHandleAppendEntries(t, follower, args)
 	_, after := follower.InspectLog()
 	if commitIndex(follower) != index || !slices.EqualFunc(log, after, entriesEqual) {

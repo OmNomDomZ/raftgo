@@ -2,10 +2,7 @@ package raft
 
 import "slices"
 
-// Status is a local observation, not proof of current leadership.
-// VotedFor is this node's vote in Term, or "" if it has not voted.
-// Votes counts distinct grants (including self) only while Candidate;
-// zero for other roles does not describe their election history.
+// Status — локальное состояние узла; votes значим только у Candidate.
 type Status struct {
 	ID           NodeID `json:"id"`
 	Role         string `json:"role"`
@@ -19,9 +16,7 @@ type Status struct {
 	Running      bool   `json:"running"`
 }
 
-// ElectionStatus is the election-only diagnostic schema for the lab1 snapshot.
-// Keep log diagnostics in Status in main; extracting lab1 must also remove the
-// log implementation and routes, not just project their fields away.
+// ElectionStatus содержит только поля выборов, без индексов лога.
 type ElectionStatus struct {
 	ID       NodeID `json:"id"`
 	Role     string `json:"role"`
@@ -33,7 +28,6 @@ type ElectionStatus struct {
 	Running  bool   `json:"running"`
 }
 
-// Election projects the same local observation without log fields.
 func (s Status) Election() ElectionStatus {
 	return ElectionStatus{
 		ID: s.ID, Role: s.Role, Term: s.Term, LeaderID: s.LeaderID,
@@ -55,8 +49,7 @@ func (rf *Raft) Status() Status {
 	return rf.statusLocked()
 }
 
-// InspectLog returns an atomic local snapshot. Uncommitted entries may change.
-// Both the slice and command bytes are owned by the caller.
+// Возвращаем независимую копию статуса и лога, снятых под одним mutex.
 func (rf *Raft) InspectLog() (Status, []LogEntry) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
