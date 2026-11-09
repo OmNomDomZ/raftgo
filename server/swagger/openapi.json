@@ -3,7 +3,7 @@
   "info": {
     "title": "Raftgo · этап 2",
     "version": "2.0.0",
-    "description": "Выборы и реплицированные строки. Отправьте command через POST /cluster/entries/{id}; сравните реплики через GET /cluster/log/{id}. 201 — commit/apply. 504 или потеря ответа — неизвестный исход, без автоматического повтора."
+    "description": "Этап 2: выборы и реплицированные строки. GET /status и GET /log показывают локальное состояние открытого узла. POST /cluster/entries/{id} передаёт строку лидеру через выбранного участника. Ответ 201 — commit и apply; 504 — неизвестный исход, автоматических повторов нет. Данные хранятся в RAM."
   },
   "servers": [
     {
@@ -29,28 +29,7 @@
         "description": "Локальное наблюдение может отставать. Опросы нескольких реплик не образуют атомарный снимок.",
         "responses": {
           "200": {
-            "description": "Локальный снимок узла",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Status"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/election": {
-      "get": {
-        "tags": [
-          "Диагностика"
-        ],
-        "summary": "Алиас /status",
-        "description": "Локальное наблюдение может отставать. Опросы нескольких реплик не образуют атомарный снимок.",
-        "responses": {
-          "200": {
-            "description": "Локальный снимок узла",
+            "description": "Локальный статус, состав и записи лога",
             "content": {
               "application/json": {
                 "schema": {
@@ -83,123 +62,12 @@
         }
       }
     },
-    "/cluster/status": {
-      "get": {
-        "tags": [
-          "Диагностика"
-        ],
-        "summary": "Наблюдения пяти реплик",
-        "responses": {
-          "200": {
-            "description": "Независимые наблюдения; недоступные реплики помечены available=false",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "atomic": {
-                      "type": "boolean",
-                      "enum": [
-                        false
-                      ]
-                    },
-                    "members": {
-                      "type": "array",
-                      "items": {
-                        "type": "object",
-                        "properties": {
-                          "id": {
-                            "type": "string"
-                          },
-                          "available": {
-                            "type": "boolean"
-                          },
-                          "observed_at": {
-                            "type": "string",
-                            "format": "date-time"
-                          },
-                          "node": {
-                            "$ref": "#/components/schemas/ElectionNode"
-                          },
-                          "error": {
-                            "type": "string"
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/cluster/log/{id}": {
-      "get": {
-        "tags": [
-          "Строки · этап 2"
-        ],
-        "summary": "Посмотреть лог выбранной реплики",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "description": "ID фиксированного участника. Follower передаст запись лидеру.",
-            "schema": {
-              "type": "string",
-              "enum": [
-                "node1",
-                "node2",
-                "node3",
-                "node4",
-                "node5"
-              ],
-              "default": "node1"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Локальный снимок реплики",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Status"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Неизвестный узел",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Снимок недоступен",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/cluster/entries/{id}": {
       "post": {
         "tags": [
           "Строки · этап 2"
         ],
-        "summary": "Добавить строку через выбранный узел (для браузера)",
+        "summary": "Добавить строку через выбранный узел",
         "description": "201 только после commit и apply. Пустые и повторяющиеся строки допустимы. Лимит — 65536 байт UTF-8. После 504 или потери ответа исход неизвестен: повторное Execute может добавить дубликат. Автоповтора нет.",
         "parameters": [
           {
@@ -530,41 +398,6 @@
             "enum": [
               true
             ]
-          }
-        }
-      },
-      "ElectionNode": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "role": {
-            "type": "string",
-            "enum": [
-              "Follower",
-              "Candidate",
-              "Leader"
-            ]
-          },
-          "term": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "leader_id": {
-            "type": "string"
-          },
-          "voted_for": {
-            "type": "string"
-          },
-          "votes": {
-            "type": "integer"
-          },
-          "quorum": {
-            "type": "integer"
-          },
-          "running": {
-            "type": "boolean"
           }
         }
       },

@@ -54,57 +54,51 @@ func TestHTTPElectionRolesAndVotes(t *testing.T) {
 		h := NewAPI(node, members).Handler()
 		check := func(role string, term raft.Term, leader, voted raft.NodeID, votes int, running bool) {
 			t.Helper()
-			var previous string
-			for _, path := range []string{"/status", "/election"} {
-				w := httptest.NewRecorder()
-				h.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
-				if w.Code != 200 || w.Header().Get("Content-Type") != "application/json" {
-					t.Fatalf("%s: %d %s", path, w.Code, w.Body.String())
+			path := "/status"
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+			if w.Code != 200 || w.Header().Get("Content-Type") != "application/json" {
+				t.Fatalf("%s: %d %s", path, w.Code, w.Body.String())
+			}
+			var got struct {
+				Node    raft.Status `json:"node"`
+				Members []Member    `json:"members"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			want := raft.ElectionStatus{ID: "A", Role: role, Term: term, LeaderID: leader, VotedFor: voted, Votes: votes, Quorum: 3, Running: running}
+			if got.Node.Election() != want || !reflect.DeepEqual(got.Members, members) {
+				t.Fatalf("%s: got %+v; want %+v, members %v", path, got, want, members)
+			}
+			// Stage 2 retains the full schema, including zero-valued fields.
+			var raw map[string]json.RawMessage
+			if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+				t.Fatal(err)
+			}
+			if len(raw) != 4 {
+				t.Fatalf("unexpected envelope: %s", w.Body.String())
+			}
+			var entries []json.RawMessage
+			var consistency string
+			if err := json.Unmarshal(raw["entries"], &entries); err != nil || string(raw["entries"]) == "null" || len(entries) != int(got.Node.LastLogIndex) {
+				t.Fatalf("entries disagree with node: %s", w.Body.String())
+			}
+			if err := json.Unmarshal(raw["consistency"], &consistency); err != nil || consistency != "local" {
+				t.Fatalf("missing local consistency: %s", w.Body.String())
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(raw["node"], &fields); err != nil {
+				t.Fatal(err)
+			}
+			keys := []string{"id", "role", "term", "leader_id", "voted_for", "votes", "quorum", "running", "commit_index", "last_log_index"}
+			if len(fields) != len(keys) {
+				t.Fatalf("unexpected fields: %v", fields)
+			}
+			for _, key := range keys {
+				if _, ok := fields[key]; !ok {
+					t.Fatalf("missing %s", key)
 				}
-				var got struct {
-					Node    raft.Status `json:"node"`
-					Members []Member    `json:"members"`
-				}
-				if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
-					t.Fatal(err)
-				}
-				want := raft.ElectionStatus{ID: "A", Role: role, Term: term, LeaderID: leader, VotedFor: voted, Votes: votes, Quorum: 3, Running: running}
-				if got.Node.Election() != want || !reflect.DeepEqual(got.Members, members) {
-					t.Fatalf("%s: got %+v; want %+v, members %v", path, got, want, members)
-				}
-				// Main retains the full schema, including zero-valued fields.
-				var raw map[string]json.RawMessage
-				if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
-					t.Fatal(err)
-				}
-				if len(raw) != 4 {
-					t.Fatalf("unexpected envelope: %s", w.Body.String())
-				}
-				var entries []json.RawMessage
-				var consistency string
-				if err := json.Unmarshal(raw["entries"], &entries); err != nil || string(raw["entries"]) == "null" || len(entries) != int(got.Node.LastLogIndex) {
-					t.Fatalf("entries disagree with node: %s", w.Body.String())
-				}
-				if err := json.Unmarshal(raw["consistency"], &consistency); err != nil || consistency != "local" {
-					t.Fatalf("missing local consistency: %s", w.Body.String())
-				}
-				var fields map[string]json.RawMessage
-				if err := json.Unmarshal(raw["node"], &fields); err != nil {
-					t.Fatal(err)
-				}
-				keys := []string{"id", "role", "term", "leader_id", "voted_for", "votes", "quorum", "running", "commit_index", "last_log_index"}
-				if len(fields) != len(keys) {
-					t.Fatalf("unexpected fields: %v", fields)
-				}
-				for _, key := range keys {
-					if _, ok := fields[key]; !ok {
-						t.Fatalf("missing %s", key)
-					}
-				}
-				if previous != "" && previous != w.Body.String() {
-					t.Fatal("election is not a status alias")
-				}
-				previous = w.Body.String()
 			}
 		}
 		check("Follower", 0, "", "", 0, false)
@@ -170,7 +164,7 @@ func TestHTTPElectionRouting(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := NewAPI(node, []Member{{ID: "A"}}).Handler()
-	for _, path := range []string{"/status", "/election"} {
+	for _, path := range []string{"/status"} {
 		for _, method := range []string{"POST", "PUT", "PATCH", "DELETE", "OPTIONS"} {
 			w := httptest.NewRecorder()
 			h.ServeHTTP(w, httptest.NewRequest(method, path, nil))
@@ -179,7 +173,7 @@ func TestHTTPElectionRouting(t *testing.T) {
 			}
 		}
 	}
-	for _, path := range []string{"/status?poll=1", "/election?poll=1"} {
+	for _, path := range []string{"/status?poll=1"} {
 		for _, method := range []string{"GET", "HEAD"} {
 			w := httptest.NewRecorder()
 			h.ServeHTTP(w, httptest.NewRequest(method, path, nil))
@@ -188,7 +182,7 @@ func TestHTTPElectionRouting(t *testing.T) {
 			}
 		}
 	}
-	for _, path := range []string{"/unknown", "/status/", "/status/child", "/election/child"} {
+	for _, path := range []string{"/unknown", "/status/", "/status/child", "/election", "/election/child", "/cluster/status", "/cluster/log/node1", "/", "/ui/", "/ui/index.html", "/ui/election.js", "/ui/election.css"} {
 		for _, method := range []string{"GET", "POST"} {
 			w := httptest.NewRecorder()
 			h.ServeHTTP(w, httptest.NewRequest(method, path, nil))

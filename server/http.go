@@ -73,7 +73,6 @@ func decode(w http.ResponseWriter, r *http.Request, limit int64, v any) bool {
 }
 func (a *API) Handler() http.Handler {
 	mux := http.NewServeMux()
-	a.electionUI(mux)
 	swaggerUI(mux)
 	status := func(w http.ResponseWriter, r *http.Request) {
 		s, entries := a.Node.InspectLog()
@@ -93,8 +92,7 @@ func (a *API) Handler() http.Handler {
 			index := raft.Index(i + 1)
 			out[i] = entry{index, e.Term, kind, string(e.Command), index <= s.CommitIndex}
 		}
-		// Put node first: election observers can read their bounded projection
-		// without downloading an ever-growing diagnostic log.
+		// Status and entries come from one local inspection.
 		if r.URL.Path == "/log" {
 			writeJSON(w, 200, struct {
 				Node        raft.Status `json:"node"`
@@ -110,9 +108,8 @@ func (a *API) Handler() http.Handler {
 			Entries     []entry     `json:"entries"`
 		}{s, a.Members, "local", out})
 	}
-	a.logUI(mux, status)
+	a.entriesForwarding(mux)
 	mux.HandleFunc("GET /status", status)
-	mux.HandleFunc("GET /election", status)
 	mux.HandleFunc("GET /log", status)
 	mux.HandleFunc("POST /entries", a.appendEntry)
 	return a.trace(mux)
@@ -185,6 +182,8 @@ func (a *API) appendEntry(w http.ResponseWriter, r *http.Request) {
 
 // RPCHandler belongs on a private listener, separate from the public API.
 func RPCHandler(node raft.RPCHandler) http.Handler {
+	var heartbeatLogMu sync.Mutex
+	var lastHeartbeatLog time.Time
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /raft/request-vote", func(w http.ResponseWriter, r *http.Request) {
 		var args raft.RequestVoteArgs
@@ -205,7 +204,15 @@ func RPCHandler(node raft.RPCHandler) http.Handler {
 			return
 		}
 		reply, err := node.HandleAppendEntries(&args)
-		slog.Debug("append entries RPC", "leader", args.LeaderID, "term", args.Term, "entries", len(args.Entries), "reply", reply, "error", err)
+		heartbeatLogMu.Lock()
+		logAppend := err != nil || len(args.Entries) > 0 || time.Since(lastHeartbeatLog) >= 5*time.Second
+		if logAppend {
+			lastHeartbeatLog = time.Now()
+		}
+		heartbeatLogMu.Unlock()
+		if logAppend {
+			slog.Debug("append entries RPC", "leader", args.LeaderID, "term", args.Term, "entries", len(args.Entries), "reply", reply, "error", err)
+		}
 		if err != nil {
 			problem(w, 503, err.Error())
 			return

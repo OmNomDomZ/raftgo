@@ -16,7 +16,7 @@ type Member struct {
 	ID     raft.NodeID `json:"id"`
 	RPCURL string      `json:"rpc_url"`
 	APIURL string      `json:"api_url"`
-	// InternalAPIURL is optional: server-side UI requests may need a Docker DNS
+	// InternalAPIURL is optional: server-side forwarding requests may need a Docker DNS
 	// address while APIURL remains reachable by external clients following 307.
 	InternalAPIURL string `json:"internal_api_url,omitempty"`
 }

@@ -185,7 +185,7 @@ func TestAPIValidationAndLocalReads(t *testing.T) {
 	if w.Code != 503 {
 		t.Fatal(w.Code)
 	}
-	for _, path := range []string{"/status", "/election", "/log"} {
+	for _, path := range []string{"/status", "/log"} {
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
 		if w.Code != 200 || !json.Valid(w.Body.Bytes()) {

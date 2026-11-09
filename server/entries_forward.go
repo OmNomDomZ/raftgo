@@ -6,13 +6,10 @@ import (
 	"io"
 	"net/http"
 	"time"
-
-	"raftgo/raft"
 )
 
-// logUI exposes only configured member API endpoints. It never accepts a URL or
-// forwards credentials, cookies, arbitrary paths, or environment proxies.
-func (a *API) logUI(mux *http.ServeMux, localStatus http.HandlerFunc) {
+// entriesForwarding sends writes only to configured members and follows explicit 307 replies.
+func (a *API) entriesForwarding(mux *http.ServeMux) {
 	members := make(map[string]string, len(a.Members))
 	redirects := make(map[string]string, len(a.Members))
 	for _, m := range a.Members {
@@ -23,39 +20,6 @@ func (a *API) logUI(mux *http.ServeMux, localStatus http.HandlerFunc) {
 		Transport:     &http.Transport{MaxIdleConnsPerHost: 2, IdleConnTimeout: 30 * time.Second},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
-	mux.HandleFunc("GET /cluster/log/{id}", func(w http.ResponseWriter, r *http.Request) {
-		base, ok := members[r.PathValue("id")]
-		if !ok {
-			problem(w, 404, "unknown member")
-			return
-		}
-		w.Header().Set("Cache-Control", "no-store")
-		if raft.NodeID(r.PathValue("id")) == a.Node.Status().ID {
-			localStatus(w, r)
-			return
-		}
-		ctx, cancel := context.WithTimeout(r.Context(), statusTimeout)
-		defer cancel()
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/status", nil)
-		if err != nil {
-			problem(w, 503, "log unavailable")
-			return
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			problem(w, 503, "log unavailable")
-			return
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != 200 {
-			problem(w, 503, "log unavailable")
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		// Stream the diagnostic log: its length is not bounded by the command limit.
-		// A timeout/truncated JSON is treated as an unsuccessful observation by UI.
-		_, _ = io.Copy(w, resp.Body)
-	})
 	mux.HandleFunc("POST /cluster/entries/{id}", func(w http.ResponseWriter, r *http.Request) {
 		base, ok := members[r.PathValue("id")]
 		if !ok {
@@ -79,6 +43,7 @@ func (a *API) logUI(mux *http.ServeMux, localStatus http.HandlerFunc) {
 				problem(w, 503, "invalid configured endpoint")
 				return
 			}
+			req.GetBody = nil
 			req.Header.Set("Content-Type", "application/json")
 			resp, err := client.Do(req)
 			if err != nil {

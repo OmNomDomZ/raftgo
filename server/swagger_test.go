@@ -24,7 +24,10 @@ func TestSwaggerOfflineRoutes(t *testing.T) {
 			if err := json.Unmarshal(w.Body.Bytes(), &doc); err != nil {
 				t.Fatal(err)
 			}
-			for _, route := range []string{"/status", "/election", "/cluster/status"} {
+			if len(doc.Paths) != 4 {
+				t.Fatalf("unexpected API paths: %v", doc.Paths)
+			}
+			for _, route := range []string{"/status", "/log", "/entries", "/cluster/entries/{id}"} {
 				if _, ok := doc.Paths[route]; !ok {
 					t.Fatalf("missing %s", route)
 				}

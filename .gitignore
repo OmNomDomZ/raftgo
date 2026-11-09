@@ -33,3 +33,5 @@ coverage.html
 
 # Personal Obsidian vault settings and installed plugins
 .obsidian/
+
+__pycache__/

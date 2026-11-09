@@ -246,6 +246,8 @@ type Raft struct {
 	// goroutines must not start tracked goroutines.
 	wg sync.WaitGroup
 
+	lastAppendFailureLog map[NodeID]time.Time
+
 	mu          sync.Mutex
 	started     bool
 	done        <-chan struct{} // Run's ctx.Done(); nil before Run

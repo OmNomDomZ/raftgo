@@ -141,8 +141,7 @@ func TestHTTPLogSnapshotWithTailAndNoop(t *testing.T) {
 			t.Fatal(err)
 		}
 		h := api.Handler()
-		var previous string
-		for _, path := range []string{"/status", "/election", "/log"} {
+		for _, path := range []string{"/status", "/log"} {
 			w := httptest.NewRecorder()
 			h.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
 			var result struct {
@@ -175,49 +174,29 @@ func TestHTTPLogSnapshotWithTailAndNoop(t *testing.T) {
 				if len(result.Members) != 2 {
 					t.Fatal("missing membership")
 				}
-				if previous != "" && previous != w.Body.String() {
-					t.Fatal("alias differs")
-				}
-				previous = w.Body.String()
 			}
 		}
 	})
 }
 
-func TestClusterStatusWithLargeStringLog(t *testing.T) {
-	var payload string
+func TestStatusWithLargeStringLog(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		api, _, _ := stringAPI(t, true)
-		body, _ := json.Marshal(map[string]string{"command": strings.Repeat("x", MaxCommandBytes)})
+		command := strings.Repeat("x", MaxCommandBytes)
+		body, _ := json.Marshal(map[string]string{"command": command})
 		if w := entryRequest(api.Handler(), string(body)); w.Code != 201 {
 			t.Fatal(w.Code)
 		}
-		// Capture the actual status serialization before using network I/O
-		// outside the virtual-time bubble.
 		w := httptest.NewRecorder()
 		api.Handler().ServeHTTP(w, httptest.NewRequest("GET", "/status", nil))
-		if w.Body.Len() <= 64<<10 {
-			t.Fatal("test requires a large status")
+		var result struct {
+			Entries []struct{ Command string } `json:"entries"`
 		}
-		payload = w.Body.String()
+		if w.Code != 200 || w.Body.Len() <= 64<<10 || json.Unmarshal(w.Body.Bytes(), &result) != nil {
+			t.Fatalf("large status truncated: %d bytes, status %d", w.Body.Len(), w.Code)
+		}
+		if len(result.Entries) != 2 || result.Entries[1].Command != command {
+			t.Fatal("large command changed or missing")
+		}
 	})
-	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(payload))
-	}))
-	defer remote.Close()
-	h := electionAPI(t, []Member{{ID: "a", APIURL: remote.URL}}).Handler()
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest("GET", "/cluster/status", nil))
-	var result struct{ Members []memberObservation }
-	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil || len(result.Members) != 1 || !result.Members[0].Available {
-		t.Fatalf("large log hid election status: %s (%v)", w.Body.String(), err)
-	}
-}
-
-func TestElectionNodeProjectionValidation(t *testing.T) {
-	for _, body := range []string{`null`, `{`, `{"node":null}`, `{"node":`, `{"node":{"term":"bad"}}`, `{"entries":"` + strings.Repeat("x", 64<<10) + `","node":{"id":"a"}}`} {
-		if _, ok := readElectionNode(strings.NewReader(body)); ok {
-			t.Fatalf("accepted invalid/oversized prefix: %.80s", body)
-		}
-	}
 }

@@ -7,18 +7,26 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"raftgo/raft"
+	"raftgo/storage"
 )
 
-func TestLogUIFixedForwarding(t *testing.T) {
+func forwardingAPI(t *testing.T, members []Member) *API {
+	t.Helper()
+	node, err := raft.New(raft.Config{ID: "local", Storage: &storage.Memory{}, Transport: electionTransport{}, ApplyCh: make(chan raft.ApplyMsg, 16)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return NewAPI(node, members)
+}
+
+func TestEntriesFixedForwarding(t *testing.T) {
 	var writes atomic.Int32
 	var forbidden atomic.Int32
 	outsider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { forbidden.Add(1) }))
 	defer outsider.Close()
 	leader := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/status" {
-			io.WriteString(w, `{"node":{"id":"leader"},"consistency":"local","entries":[]}`)
-			return
-		}
 		writes.Add(1)
 		data, _ := io.ReadAll(r.Body)
 		if r.Method != "POST" || r.URL.Path != "/entries" || string(data) != `{"command":"<b>"}` || r.Header.Get("Cookie") != "" {
@@ -35,7 +43,7 @@ func TestLogUIFixedForwarding(t *testing.T) {
 	}))
 	defer follower.Close()
 	members := []Member{{ID: "local"}, {ID: "leader", APIURL: "http://public-leader.invalid", InternalAPIURL: leader.URL}, {ID: "follower", APIURL: "http://public-follower.invalid", InternalAPIURL: follower.URL}}
-	h := electionAPI(t, members).Handler()
+	h := forwardingAPI(t, members).Handler()
 	// Handler targets are a snapshot, not caller-controlled data.
 	members[1].APIURL = outsider.URL
 	members[1].InternalAPIURL = outsider.URL
@@ -65,11 +73,6 @@ func TestLogUIFixedForwarding(t *testing.T) {
 	if forbidden.Load() != 0 || writes.Load() != 1 {
 		t.Fatal("followed forbidden target or repeated write")
 	}
-	for path, code := range map[string]int{"/cluster/log/leader": 200, "/cluster/log/local": 200, "/cluster/log/follower": 503, "/cluster/log/unknown": 404} {
-		if w = request("GET", path); w.Code != code {
-			t.Fatalf("%s: %d %s", path, w.Code, w.Body)
-		}
-	}
 	if w = request("POST", "/cluster/entries/unknown"); w.Code != 404 {
 		t.Fatal(w.Code)
 	}
@@ -78,7 +81,7 @@ func TestLogUIFixedForwarding(t *testing.T) {
 	}
 }
 
-func TestLogUILostWriteResponseIsNotRetried(t *testing.T) {
+func TestEntriesLostWriteResponseIsNotRetried(t *testing.T) {
 	var writes atomic.Int32
 	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writes.Add(1)
@@ -90,7 +93,7 @@ func TestLogUILostWriteResponseIsNotRetried(t *testing.T) {
 		conn.Close()
 	}))
 	defer peer.Close()
-	h := electionAPI(t, []Member{{ID: "peer", APIURL: peer.URL}}).Handler()
+	h := forwardingAPI(t, []Member{{ID: "peer", APIURL: peer.URL}}).Handler()
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest("POST", "/cluster/entries/peer", strings.NewReader(`{"command":""}`)))
 	if w.Code != 504 || writes.Load() != 1 || !strings.Contains(w.Body.String(), "unknown") {
