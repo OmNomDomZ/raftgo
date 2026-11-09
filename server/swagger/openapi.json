@@ -1,0 +1,611 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Raftgo · этап 2",
+    "version": "2.0.0",
+    "description": "Выборы и реплицированные строки. Отправьте command через POST /cluster/entries/{id}; сравните реплики через GET /cluster/log/{id}. 201 — commit/apply. 504 или потеря ответа — неизвестный исход, без автоматического повтора."
+  },
+  "servers": [
+    {
+      "url": "/",
+      "description": "Текущий узел (same-origin)"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Строки · этап 2"
+    },
+    {
+      "name": "Диагностика"
+    }
+  ],
+  "paths": {
+    "/status": {
+      "get": {
+        "tags": [
+          "Диагностика"
+        ],
+        "summary": "Локальный статус и лог",
+        "description": "Локальное наблюдение может отставать. Опросы нескольких реплик не образуют атомарный снимок.",
+        "responses": {
+          "200": {
+            "description": "Локальный снимок узла",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Status"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/election": {
+      "get": {
+        "tags": [
+          "Диагностика"
+        ],
+        "summary": "Алиас /status",
+        "description": "Локальное наблюдение может отставать. Опросы нескольких реплик не образуют атомарный снимок.",
+        "responses": {
+          "200": {
+            "description": "Локальный снимок узла",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Status"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/log": {
+      "get": {
+        "tags": [
+          "Диагностика"
+        ],
+        "summary": "Локальный лог, включая неподтверждённый хвост",
+        "description": "Локальное наблюдение может отставать. Опросы нескольких реплик не образуют атомарный снимок.",
+        "responses": {
+          "200": {
+            "description": "Локальный лог",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Log"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/cluster/status": {
+      "get": {
+        "tags": [
+          "Диагностика"
+        ],
+        "summary": "Наблюдения пяти реплик",
+        "responses": {
+          "200": {
+            "description": "Независимые наблюдения; недоступные реплики помечены available=false",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "atomic": {
+                      "type": "boolean",
+                      "enum": [
+                        false
+                      ]
+                    },
+                    "members": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "available": {
+                            "type": "boolean"
+                          },
+                          "observed_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "node": {
+                            "$ref": "#/components/schemas/ElectionNode"
+                          },
+                          "error": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/cluster/log/{id}": {
+      "get": {
+        "tags": [
+          "Строки · этап 2"
+        ],
+        "summary": "Посмотреть лог выбранной реплики",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "ID фиксированного участника. Follower передаст запись лидеру.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "node1",
+                "node2",
+                "node3",
+                "node4",
+                "node5"
+              ],
+              "default": "node1"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Локальный снимок реплики",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Status"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Неизвестный узел",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Снимок недоступен",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/cluster/entries/{id}": {
+      "post": {
+        "tags": [
+          "Строки · этап 2"
+        ],
+        "summary": "Добавить строку через выбранный узел (для браузера)",
+        "description": "201 только после commit и apply. Пустые и повторяющиеся строки допустимы. Лимит — 65536 байт UTF-8. После 504 или потери ответа исход неизвестен: повторное Execute может добавить дубликат. Автоповтора нет.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "ID фиксированного участника. Follower передаст запись лидеру.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "node1",
+                "node2",
+                "node3",
+                "node4",
+                "node5"
+              ],
+              "default": "node1"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "command"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "command": {
+                    "type": "string",
+                    "description": "До 64 КиБ UTF-8."
+                  }
+                }
+              },
+              "example": {
+                "command": "Привет, Raft!"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Подтверждено и применено",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Added"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Неверный JSON или команда",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Неизвестный узел",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Запись заменена до подтверждения",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Лидер неизвестен или недоступен",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Исход неизвестен; не повторять автоматически",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/entries": {
+      "post": {
+        "tags": [
+          "Строки · этап 2"
+        ],
+        "summary": "Прямой HTTP API добавления строки",
+        "description": "Для curl/Go-клиента. В Swagger используйте POST /cluster/entries/{id}: браузер не может перейти на внутренний Docker-адрес из 307. Здесь follower возвращает 307 Location лидера; лидер — 201 после commit/apply. 504 — неизвестный исход.",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "command"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "command": {
+                    "type": "string",
+                    "description": "До 64 КиБ UTF-8."
+                  }
+                }
+              },
+              "example": {
+                "command": "Привет, Raft!"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Подтверждено и применено",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Added"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Неверный JSON или команда",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Запись заменена до подтверждения",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Лидер неизвестен или недоступен",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Исход неизвестен; не повторять автоматически",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "307": {
+            "description": "Направить тот же запрос лидеру. В Docker Location содержит внутренний адрес.",
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "index": {
+            "type": "integer"
+          },
+          "term": {
+            "type": "integer"
+          }
+        }
+      },
+      "Entry": {
+        "type": "object",
+        "properties": {
+          "index": {
+            "type": "integer"
+          },
+          "term": {
+            "type": "integer"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "command",
+              "noop"
+            ]
+          },
+          "command": {
+            "type": "string"
+          },
+          "committed": {
+            "type": "boolean"
+          }
+        }
+      },
+      "Node": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "Follower",
+              "Candidate",
+              "Leader"
+            ]
+          },
+          "term": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "leader_id": {
+            "type": "string"
+          },
+          "voted_for": {
+            "type": "string"
+          },
+          "votes": {
+            "type": "integer"
+          },
+          "quorum": {
+            "type": "integer"
+          },
+          "running": {
+            "type": "boolean"
+          },
+          "commit_index": {
+            "type": "integer"
+          },
+          "last_log_index": {
+            "type": "integer"
+          }
+        },
+        "description": "Локальное наблюдение; votes — голоса только текущего кандидата."
+      },
+      "Status": {
+        "type": "object",
+        "properties": {
+          "node": {
+            "$ref": "#/components/schemas/Node"
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Member"
+            }
+          },
+          "consistency": {
+            "type": "string",
+            "enum": [
+              "local"
+            ]
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Entry"
+            }
+          }
+        }
+      },
+      "Added": {
+        "type": "object",
+        "required": [
+          "index",
+          "term",
+          "committed"
+        ],
+        "properties": {
+          "index": {
+            "type": "integer"
+          },
+          "term": {
+            "type": "integer"
+          },
+          "committed": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          }
+        }
+      },
+      "ElectionNode": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "Follower",
+              "Candidate",
+              "Leader"
+            ]
+          },
+          "term": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "leader_id": {
+            "type": "string"
+          },
+          "voted_for": {
+            "type": "string"
+          },
+          "votes": {
+            "type": "integer"
+          },
+          "quorum": {
+            "type": "integer"
+          },
+          "running": {
+            "type": "boolean"
+          }
+        }
+      },
+      "Member": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "rpc_url": {
+            "type": "string"
+          },
+          "api_url": {
+            "type": "string"
+          },
+          "internal_api_url": {
+            "type": "string"
+          }
+        }
+      },
+      "Log": {
+        "type": "object",
+        "properties": {
+          "node": {
+            "$ref": "#/components/schemas/Node"
+          },
+          "consistency": {
+            "type": "string",
+            "enum": [
+              "local"
+            ]
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Entry"
+            }
+          }
+        }
+      }
+    }
+  },
+  "x-raftgo-stage": 2
+}

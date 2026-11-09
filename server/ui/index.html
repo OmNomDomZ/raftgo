@@ -2,7 +2,7 @@
 <html lang="ru">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Raft · Строковый лог</title><link rel="stylesheet" href="/ui/election.css"><script src="/ui/election.js" defer></script></head>
 <body><main>
-<header><span class="eyebrow">RAFTGO / ЭТАП 2</span><h1>Выборы и репликация строк</h1><p>Пять узлов · кворум 3 · безопасная память</p></header>
+<header><span class="eyebrow">RAFTGO / ЭТАП 2</span><h1>Выборы и репликация строк</h1><p>Пять узлов · кворум 3 · безопасная память</p><p><a href="/swagger/">Swagger · запросы API</a></p></header>
 <section class="notice"><strong>Независимые локальные наблюдения</strong><p>Опрос неатомарный: узлы отвечают в разное время. Роль Leader не доказывает наличие кворума. Доступность HTTP не означает доступность RPC.</p></section>
 <div class="toolbar"><p id="poll" role="status">Загрузка состава…</p><button id="refresh" type="button">Обновить</button></div>
 <section id="nodes" aria-label="Узлы кластера"></section>
