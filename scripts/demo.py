@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""Start the demo cluster and open five macOS Terminal windows with node logs."""
+"""Запуск пяти узлов и пяти окон Terminal с их логами."""
 import argparse
-import json
 import pathlib
 import shlex
 import subprocess
@@ -25,13 +24,14 @@ def commands(root, project):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--directory", type=pathlib.Path, default=ROOT,
-                        help="checkout with scenarios/compose.yaml (default: script's project)")
-    parser.add_argument("--project", default="raftgo-scenarios", help="Docker Compose project")
-    parser.add_argument("--dry-run", action="store_true", help="print commands without starting anything")
+                        help="папка проекта (по умолчанию — папка этого скрипта)")
+    parser.add_argument("--project", default="raftgo-scenarios", help="имя проекта Docker Compose")
+    parser.add_argument("--dry-run", action="store_true", help="показать команды без запуска")
     args = parser.parse_args()
     root = args.directory.resolve()
-    if not (root / "scenarios/compose.yaml").is_file():
-        parser.error(f"missing {root / 'scenarios/compose.yaml'}")
+    compose_file = root / "scenarios/compose.yaml"
+    if not compose_file.is_file():
+        parser.error(f"Файл не найден: {compose_file}")
     compose, windows = commands(root, args.project)
     if args.dry_run:
         print(shlex.join(compose + ["up", "-d", "--build"]))
@@ -39,19 +39,17 @@ def main():
             print(shell)
         return
     if sys.platform != "darwin":
-        parser.error("opening windows requires macOS Terminal.app; use --dry-run to see commands")
-    # Do not change existing clusters: up could otherwise return an
-    # empty-memory node to an existing cluster. A complete down is an explicit reset.
-    result = subprocess.run(compose + ["ps", "--all", "--format", "json"],
-                            check=True, text=True, capture_output=True)
-    text = result.stdout.strip()
-    containers = json.loads(text) if text.startswith("[") else [json.loads(line) for line in text.splitlines()]
-    if containers:
-        print("Cluster already exists. Following its logs without rebuilding or restarting nodes.")
+        parser.error("Для открытия окон нужен macOS Terminal. Команды можно посмотреть через --dry-run.")
+    result = subprocess.run(
+        compose + ["ps", "--all", "--quiet"],
+        check=True, text=True, capture_output=True,
+    )
+    if result.stdout.strip():
+        print("Контейнеры уже существуют. Открываю логи без перезапуска.")
     else:
         subprocess.run(compose + ["up", "-d", "--build"], check=True)
-    # Pass shell commands as argv; never interpolate shell text into AppleScript.
-    apple = '''on run argv
+
+    terminal_script = '''on run argv
     tell application "Terminal"
         activate
         repeat with shellCommand in argv
@@ -59,14 +57,14 @@ def main():
         end repeat
     end tell
 end run'''
-    subprocess.run(["osascript", "-e", apple, *windows], check=True)
+    subprocess.run(["osascript", "-e", terminal_script, *windows], check=True)
     print("UI: http://localhost:18001/   Swagger: http://localhost:18001/swagger/")
-    print("Closing a window stops log viewing only. Model failures with compose pause/unpause.")
-    print("Full cluster reset (loses all RAM state): " + shlex.join(compose + ["down"]))
+    print("Закрытие окна останавливает только просмотр логов, узел продолжает работать.")
+    print("Остановить весь стенд и удалить данные из RAM: " + shlex.join(compose + ["down"]))
 
 
 if __name__ == "__main__":
     try:
         main()
     except (subprocess.CalledProcessError, OSError) as error:
-        sys.exit(f"Demo launch failed: {error}")
+        sys.exit(f"Не удалось запустить демонстрацию: {error}")
