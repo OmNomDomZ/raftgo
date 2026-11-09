@@ -38,27 +38,6 @@
         }
       }
     },
-    "/election": {
-      "get": {
-        "tags": [
-          "Диагностика"
-        ],
-        "summary": "Алиас /status",
-        "description": "Локальное наблюдение может отставать. Опросы нескольких реплик не образуют атомарный снимок.",
-        "responses": {
-          "200": {
-            "description": "Локальный снимок (у /log нет members)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Status"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/cluster/status": {
       "get": {
         "tags": [

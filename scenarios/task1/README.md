@@ -17,7 +17,7 @@ bash scenarios/task1/run.sh
 
 1. Запустите новый стенд по README. Откройте http://localhost:18001/.
    Убедитесь: «ЭТАП 1», пять свежих карточек, один Leader, общий term,
-   quorum=3. Сравните /status и /election. Голос относится только к текущему
+   quorum=3. Посмотрите локальный /status. Голос относится только к текущему
    term; votes показаны у Candidate, история голосов не восстанавливается.
 2. Определите Leader по UI. В отдельном терминале выполните
    `docker compose -p raftgo-scenarios -f scenarios/compose.yaml pause nodeN`.

@@ -103,7 +103,7 @@ def task1():
     current = leader()
     term = status(current)['term']
     for n in NODES:
-        _, body, _ = request(n, 'GET', '/election', expected=200)
+        _, body, _ = request(n, 'GET', '/status', expected=200)
         s = body['node']
         check(s['id'] == n and s['running'] and s['quorum'] == 3, 'Invalid node status')
         check(s['role'] == ('Leader' if n == current else 'Follower'), 'Unexpected role')

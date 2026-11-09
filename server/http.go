@@ -49,7 +49,6 @@ func (a *API) Handler() http.Handler {
 		writeJSON(w, 200, map[string]any{"node": a.Node.Status(), "members": a.Members})
 	}
 	mux.HandleFunc("GET /status", status)
-	mux.HandleFunc("GET /election", status)
 	return a.trace(mux)
 }
 

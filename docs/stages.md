@@ -61,7 +61,7 @@ dashboard есть в scenarios/. Runner использует pause/unpause,
 | Маршрут | С этапа | Семантика |
 | --- | --- | --- |
 | `GET /` | 1 | Встроенный UI текущего этапа без отдельного dev-сервера |
-| `GET /status`, `GET /election` | 1 | Локальный статус + участники; alias сохраняется |
+| `GET /status` | 1 | Локальный статус + участники; `/election` в lab1 удалён |
 | `GET /log` | 2 | Локальный снимок лога, включая неподтверждённый хвост |
 | `POST /entries` | 2 | `{"command":"строка"}`, успех 201 после commit и apply |
 | `GET/POST/PUT/DELETE /kv/{key}` | 3 | Read/create/upsert/delete строк |
