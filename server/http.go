@@ -5,6 +5,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sync"
+	"time"
 
 	"raftgo/raft"
 )
@@ -54,6 +56,8 @@ func (a *API) Handler() http.Handler {
 
 // RPCHandler belongs on a private listener, separate from the public API.
 func RPCHandler(node raft.RPCHandler) http.Handler {
+	var heartbeatLogMu sync.Mutex
+	var lastHeartbeatLog time.Time
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /raft/request-vote", func(w http.ResponseWriter, r *http.Request) {
 		var args raft.RequestVoteArgs
@@ -74,7 +78,15 @@ func RPCHandler(node raft.RPCHandler) http.Handler {
 			return
 		}
 		reply, err := node.HandleAppendEntries(&args)
-		slog.Debug("append entries RPC", "leader", args.LeaderID, "term", args.Term, "reply", reply, "error", err)
+		heartbeatLogMu.Lock()
+		logHeartbeat := err != nil || time.Since(lastHeartbeatLog) >= 5*time.Second
+		if logHeartbeat {
+			lastHeartbeatLog = time.Now()
+		}
+		heartbeatLogMu.Unlock()
+		if logHeartbeat {
+			slog.Debug("append entries RPC", "leader", args.LeaderID, "term", args.Term, "reply", reply, "error", err)
+		}
 		if err != nil {
 			problem(w, 503, err.Error())
 			return

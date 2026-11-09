@@ -13,7 +13,6 @@ import (
 	"syscall"
 	"time"
 
-	"raftgo/internal/logging"
 	"raftgo/raft"
 	"raftgo/server"
 	"raftgo/storage"
@@ -35,8 +34,7 @@ func run() error {
 	if err := level.UnmarshalText([]byte(*logLevel)); err != nil {
 		return err
 	}
-	handler := slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level})
-	slog.SetDefault(slog.New(logging.NewHeartbeatHandler(handler, 5*time.Second)).With("node", *id))
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level})).With("node", *id))
 	cfg, err := server.LoadConfig(*path, raft.NodeID(*id))
 	if err != nil {
 		return err
