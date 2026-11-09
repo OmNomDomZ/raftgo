@@ -1,5 +1,10 @@
 # API этапа 1
 
+Swagger UI: `GET /swagger/`; OpenAPI: `GET /swagger/openapi.json`.
+Swagger показывает только статус выборов и наблюдения пяти узлов.
+Спецификация содержит только возможности этапа 1.
+[Запуск и примеры](demo-launch.md).
+
 `GET /status` и `GET /election` — alias с ответом 200, JSON `node`/`members`.
 
 Пример начального ответа для узла с одним участником:

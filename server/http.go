@@ -44,6 +44,7 @@ func decode(w http.ResponseWriter, r *http.Request, limit int64, v any) bool {
 func (a *API) Handler() http.Handler {
 	mux := http.NewServeMux()
 	a.electionUI(mux)
+	swaggerUI(mux)
 	status := func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"node": a.Node.Status(), "members": a.Members})
 	}
