@@ -211,7 +211,11 @@ func RPCHandler(node raft.RPCHandler) http.Handler {
 		}
 		heartbeatLogMu.Unlock()
 		if logAppend {
-			slog.Debug("append entries RPC", "leader", args.LeaderID, "term", args.Term, "entries", len(args.Entries), "reply", reply, "error", err)
+			slog.Debug("append entries RPC",
+				"leader", args.LeaderID, "term", args.Term,
+				"prevLogIndex", args.PrevLogIndex, "prevLogTerm", args.PrevLogTerm,
+				"entries", len(args.Entries), "leaderCommit", args.LeaderCommit,
+				"reply", reply, "error", err)
 		}
 		if err != nil {
 			problem(w, 503, err.Error())
