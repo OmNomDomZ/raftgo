@@ -21,7 +21,9 @@ type API struct {
 	Node    *raft.Raft
 	Members []Member
 	mu      sync.Mutex
+	// до какого индекса обработаны записи
 	applied raft.Index
+	// какой канал сейчас используется для уведомления
 	changed chan struct{}
 	logger  *slog.Logger
 }

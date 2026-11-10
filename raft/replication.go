@@ -39,7 +39,6 @@ func (rf *Raft) Start(cmd []byte) (Index, Term, error) {
 	index := rf.lastLogIndexLocked() + 1
 	entry := LogEntry{Term: rf.currentTerm, Kind: EntryCommand, Command: cmd}
 	if err := rf.storeLogLocked(index, []LogEntry{entry}); err != nil {
-		// TODO: отступать при ошибке сохранения записи.
 		return 0, rf.currentTerm, fmt.Errorf("raft: persist entry %d: %w", index, err)
 	}
 	rf.advanceCommitLocked()
